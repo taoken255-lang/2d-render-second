@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Threaded WebRTC</title>
+    <style>body {
+        font-family: Arial, Helvetica, sans-serif;
+        margin: 20px;
+        background: #f0f0f0
+    }
+
+    .card {
+        max-width: 800px;
+        margin: 0 auto;
+        background: #fff;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, .1)
+    }
+
+    video {
+        width: 100%;
+        max-width: 640px;
+        border: 2px solid #ddd;
+        border-radius: 5px;
+        margin: 20px 0
+    }
+
+    .status {
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 5px;
+        background: #e8f5e8;
+        border: 1px solid #4caf50
+    }
+
+    .error {
+        background: #ffebee;
+        border: 1px solid #f44336
+    }
+
+    button {
+        background: #4caf50;
+        color: #fff;
+        padding: 10px 20px;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        margin: 5px
+    }
+
+    button:hover {
+        background: #45a049
+    }
+
+    button:disabled {
+        background: #bfbfbf;
+        cursor: not-allowed;
+    }
+
+    button:disabled:hover {
+        background: #bfbfbf;
+    }
+
+    /* simple log panel */
+    .log {
+        max-height: 240px;
+        overflow-y: auto;
+        background: #1e1e1e;
+        color: #00c853;
+        font-family: monospace;
+        font-size: 0.9em;
+        padding: 8px;
+        margin-top: 10px;
+        white-space: pre-wrap;
+    }
+
+    input, select {
+        padding: 8px;
+        margin: 5px;
+        border: 1px solid #ddd;
+        border-radius: 3px
+    }
+
+    label {
+        margin-right: 5px;
+        margin-left: 10px;
+        font-weight: bold
+    }
+
+    label:first-child {
+        margin-left: 0
+    }</style>
+</head>
+<body>
+<div class="card"><h1>Threaded WebRTC Server</h1>
+    <p>Single WS control channel + WebRTC media</p>
+
+    <div>
+        <label for="file">Audio file:</label>
+        <input type="file" id="file" accept="audio/wav,.wav">
+        <label for="sample_rate">Sample rate:</label>
+        <select id="sample_rate">
+            <option value="16000" selected>16 kHz</option>
+            <option value="24000">24 kHz</option>
+            <option value="48000">48 kHz</option>
+        </select>
+    </div>
+
+    <div style="margin-top: 10px;">
+        <label for="avatar">Avatar:</label>
+        <select id="avatar">
+            <option value="" disabled>Loading...</option>
+        </select>
+        <label for="animation">Animation:</label>
+        <select id="animation">
+            <option value="" disabled>Loading...</option>
+        </select>
+        <label for="emotion">Emotion:</label>
+        <select id="emotion">
+            <option value="" disabled>Loading...</option>
+        </select>
+        <label for="auto_idle">Auto Idle:</label>
+        <input id="auto_idle" type="checkbox" checked />
+    </div>
+
+    <div style="margin-top:15px">
+        <button id="wsBtn" onclick="connectWS()">Connect WS</button>
+        <button id="rtcBtn" onclick="connectWebRTC()" disabled>Connect WebRTC</button>
+        <button id="initBtn" onclick="sendInit()" disabled>Send Init</button>
+        <button id="audioBtn" onclick="sendAudio()" disabled>Send Audio</button>
+        <button id="intBtn" onclick="sendInterrupt()" disabled>Interrupt</button>
+        <button id="setAvatarBtn" onclick="sendSetAvatar()" disabled>Set Avatar (id=default)</button>
+        <button id="playAnimationBtn" onclick="sendPlayAnimation()" disabled>Play Animation (id=default)</button>
+        <button id="setEmotionBtn" onclick="sendSetEmotion()" disabled>Set Emotion (id=default)</button>
+    </div>
+
+    <div style="margin-top: 15px;">
+        <label for="speechText">Text to Synthesize:</label>
+        <input type="text" id="speechText" placeholder="Enter text to synthesize..." style="width: 300px;">
+        <button id="synthesizeSpeechBtn" onclick="sendSynthesizeSpeech()" disabled>Synthesize Speech</button>
+    </div>
+
+    <div id="status" class="status">Idle</div>
+
+    <div id="log" class="log"></div>
+
+    <video id="vid" autoplay playsinline></video>
+</div>
+
+<script>
+let ws = null;
+let pc = null;
+let infoData = null;
+
+const S = id => document.getElementById(id);
+
+const addLog = msg => {
+    const log = S('log');
+    const ts = new Date().toLocaleTimeString();
+    log.innerHTML += `[${ts}] ${msg}\n`;
+    log.scrollTop = log.scrollHeight;
+};
+
+function setBtns({ws = null, rtc = null, init = null, audio = null, interrupt = null, avatar = null, animation = null, emotion = null, synthesize = null}) {
+    if (ws !== null) S('wsBtn').disabled = ws;
+    if (rtc !== null) S('rtcBtn').disabled = rtc;
+    if (init !== null) S('initBtn').disabled = init;
+    if (audio !== null) S('audioBtn').disabled = audio;
+    if (interrupt !== null) S('intBtn').disabled = interrupt;
+    if (avatar !== null) S('setAvatarBtn').disabled = avatar;
+    if (animation !== null) S('playAnimationBtn').disabled = animation;
+    if (emotion !== null) S('setEmotionBtn').disabled = emotion;
+    if (synthesize !== null) S('synthesizeSpeechBtn').disabled = synthesize;
+}
+
+const status = (txt, err = false) => {
+    S('status').textContent = txt;
+    S('status').className = 'status' + (err ? ' error' : '');
+    addLog(txt);
+};
+
+// Load info data from server
+async function loadInfoData() {
+    try {
+        const response = await fetch('/info');
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        infoData = await response.json();
+        addLog('Info data loaded successfully');
+        populateAvatarSelect();
+        // Set up change handler for avatar select
+        S('avatar').addEventListener('change', onAvatarChange);
+    } catch (error) {
+        addLog(`Failed to load info data: ${error.message}`);
+        console.error('Error loading info data:', error);
+        // Show error state in selects
+        S('avatar').innerHTML = '<option value="" disabled selected>Error loading data</option>';
+        S('animation').innerHTML = '<option value="" disabled selected>Error loading data</option>';
+        S('emotion').innerHTML = '<option value="" disabled selected>Error loading data</option>';
+    }
+}
+
+// Populate avatar select with loaded data
+function populateAvatarSelect() {
+    if (!infoData) return;
+    
+    const avatarSelect = S('avatar');
+    const currentValue = avatarSelect.value;
+    
+    // Clear existing options
+    avatarSelect.innerHTML = '';
+    
+    // Add options from loaded data
+    Object.keys(infoData).forEach(avatar => {
+        const option = document.createElement('option');
+        option.value = avatar;
+        option.textContent = avatar;
+        if (avatar === currentValue) {
+            option.selected = true;
+        }
+        avatarSelect.appendChild(option);
+    });
+    
+    // If no current value was selected, select the first one
+    if (avatarSelect.selectedIndex === -1 && avatarSelect.options.length > 0) {
+        avatarSelect.selectedIndex = 0;
+    }
+    
+    // Update animations and emotions for selected avatar
+    onAvatarChange();
+}
+
+// Update animations and emotions when avatar changes
+function onAvatarChange() {
+    if (!infoData) return;
+    
+    const selectedAvatar = S('avatar').value;
+    const avatarData = infoData[selectedAvatar];
+    
+    if (!avatarData) return;
+    
+    // Update animation select
+    const animationSelect = S('animation');
+    const currentAnimation = animationSelect.value;
+    animationSelect.innerHTML = '';
+    
+    avatarData.animations.forEach(animation => {
+        const option = document.createElement('option');
+        option.value = animation;
+        option.textContent = animation;
+        if (animation === currentAnimation) {
+            option.selected = true;
+        }
+        animationSelect.appendChild(option);
+    });
+    
+    if (animationSelect.selectedIndex === -1 && animationSelect.options.length > 0) {
+        animationSelect.selectedIndex = 0;
+    }
+    
+    // Update emotion select
+    const emotionSelect = S('emotion');
+    const currentEmotion = emotionSelect.value;
+    emotionSelect.innerHTML = '';
+    
+    avatarData.emotions.forEach(emotion => {
+        const option = document.createElement('option');
+        option.value = emotion;
+        option.textContent = emotion;
+        if (emotion === currentEmotion) {
+            option.selected = true;
+        }
+        emotionSelect.appendChild(option);
+    });
+    
+    if (emotionSelect.selectedIndex === -1 && emotionSelect.options.length > 0) {
+        emotionSelect.selectedIndex = 0;
+    }
+    
+    addLog(`Updated options for avatar: ${selectedAvatar}`);
+}
+
+// Initial state – only Connect WS enabled
+
+window.addEventListener('DOMContentLoaded', () => {
+    // At start WS not connected, WebRTC may be established any time
+    setBtns({ws: false, rtc: false, init: true, audio: true, interrupt: true, avatar: true, emotion: true, animation: true, synthesize: true});
+    // Load info data and populate selects
+    loadInfoData();
+});
+
+function connectWS() {
+    let protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${protocol}//${location.host}/ws`);
+    ws.onopen = () => {
+        status('WS connected');
+        setBtns({ws: true, rtc: false, init: false});
+    };
+    ws.onmessage = ev => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'ready') {
+            status('Session ready: ' + msg.sessionId);
+            setBtns({init: true, audio: false, interrupt: false, avatar: false, emotion: false, animation: false, synthesize: false});
+        } else if (msg.type === 'error') {
+            status(`Error: ${msg.message}`, true);
+        } else {
+            status(`WS message ${ev.data}`);
+        }
+    };
+    ws.onerror = err => {
+        console.error(err);
+        status('WS error', true);
+    };
+    ws.onclose = () => {
+        status('WS closed');
+        // Reset to initial: allow reconnect WS and WebRTC
+        setBtns({ws: false, rtc: false, init: true, audio: true, interrupt: true, avatar: true, emotion: true, animation: true, synthesize: true});
+    };
+}
+
+async function connectWebRTC() {
+    try {
+        status('Connecting WebRTC');
+        setBtns({rtc: true});
+        pc = new RTCPeerConnection();
+        pc.addTransceiver('audio', {direction: 'recvonly'});
+        pc.addTransceiver('video', {direction: 'recvonly'});
+        pc.ontrack = e => {
+            if (e.track.kind === 'video') {
+                S('vid').srcObject = e.streams[0];
+            }
+        };
+        await pc.setLocalDescription(await pc.createOffer());
+        const res = await fetch('/offer', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(pc.localDescription)
+        });
+        await pc.setRemoteDescription(await res.json());
+        status('WebRTC connected');
+        // Disable RTC button to prevent reconnect attempts but keep others intact
+        setBtns({rtc: true});
+    } catch (e) {
+        console.error(e);
+        status('WebRTC error', true);
+        setBtns({rtc: false});
+    }
+}
+
+function sendInit() {
+    const sel = document.getElementById('sample_rate');
+    const sample_rate = parseInt(sel.value, 10);
+    const msg = {type: 'connect', audio: {sampleRate: sample_rate}, avatarId: 'default'};
+    ws.send(JSON.stringify(msg));
+    status('Init sent');
+    addLog('Init message sent');
+}
+
+function u8ToB64(u8) {
+  // Безопасная конверсия Uint8Array -> base64 (батчим по 32К)
+  let s = '';
+  const CH = 0x8000;
+  for (let i = 0; i < u8.length; i += CH) {
+    s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+  }
+  return btoa(s);
+}
+
+function parseWav(buffer) {
+  const dv = new DataView(buffer);
+  const str = (off, len) => String.fromCharCode(...new Uint8Array(buffer, off, len));
+  if (str(0,4) !== 'RIFF' || str(8,4) !== 'WAVE') throw new Error('Not a RIFF/WAVE');
+
+  let fmt = null;
+  let dataOffset = null;
+  let dataSize = 0;
+
+  let off = 12; // первый субчанк после 'RIFF....WAVE'
+  while (off + 8 <= dv.byteLength) {
+    const id = str(off, 4);
+    const size = dv.getUint32(off + 4, true);
+    const body = off + 8;
+
+    if (id === 'fmt ') {
+      const audioFormat   = dv.getUint16(body + 0,  true); // 1=PCM, 3=IEEE float
+      const numChannels   = dv.getUint16(body + 2,  true);
+      const sampleRate    = dv.getUint32(body + 4,  true);
+      const byteRate      = dv.getUint32(body + 8,  true);
+      const blockAlign    = dv.getUint16(body + 12, true);
+      const bitsPerSample = dv.getUint16(body + 14, true);
+      fmt = { audioFormat, numChannels, sampleRate, byteRate, blockAlign, bitsPerSample };
+    } else if (id === 'data') {
+      dataOffset = body;
+      dataSize = size;
+      // нельзя break до того, как мы нашли fmt, но обычно fmt уже есть
+      // всё же продолжим цикл на всякий случай
+    }
+    // чанки выровнены по 2 байта
+    off = body + size + (size & 1);
+  }
+  if (!fmt || dataOffset == null) throw new Error('Invalid WAV: missing fmt or data');
+  return { ...fmt, dataOffset, dataSize };
+}
+
+function sendAudio() {
+  const file = S('file').files[0];
+  if (!file) { alert('Select WAV or raw PCM file'); return; }
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    const buf = reader.result; // ArrayBuffer
+    let dataOffset = 0, dataEnd = new Uint8Array(buf).length;
+    // Значения по умолчанию для raw PCM 16kHz mono s16le
+    let fmt = { sampleRate: 16000, numChannels: 1, bitsPerSample: 16, blockAlign: 2 };
+
+    // Пытаемся распарсить как WAV, иначе считаем raw
+    try {
+      const wav = parseWav(buf);
+      fmt = {
+        sampleRate: wav.sampleRate,
+        numChannels: wav.numChannels,
+        bitsPerSample: wav.bitsPerSample,
+        blockAlign: wav.blockAlign
+      };
+      dataOffset = wav.dataOffset;
+      dataEnd = wav.dataOffset + wav.dataSize;
+    } catch (e) {
+      console.warn('Not WAV or malformed header — streaming as raw PCM s16le @16k mono');
+    }
+
+    // 0.6s с выравниванием по blockAlign
+    const secondsPerChunk = 0.6;
+    const framesPerChunk = Math.floor(fmt.sampleRate * secondsPerChunk);
+    const chunkBytes = Math.max(fmt.blockAlign, framesPerChunk * fmt.blockAlign);
+
+    let pos = dataOffset;
+    while (pos < dataEnd) {
+      const len = Math.min(chunkBytes, dataEnd - pos);
+      const slice = new Uint8Array(buf, pos, len);
+      pos += len;
+
+      const b64 = u8ToB64(slice);
+      ws.send(JSON.stringify({
+        type: 'audio',
+        data: b64,
+        end: false
+      }));
+      addLog(`Sent ${slice.length} bytes`);
+    }
+    ws.send(JSON.stringify({
+        type: 'audio',
+        data: '',
+        end: true
+      }));
+    addLog(`Sent 0 bytes`);
+    status('Audio sent');
+    addLog('Audio data sent');
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+
+function sendInterrupt() {
+    ws.send(JSON.stringify({type: 'interrupt'}));
+    status('Interrupt sent');
+    addLog('Interrupt sent');
+    // keep audio button enabled to continue? Up to spec keep enabled
+}
+
+function sendSetAvatar() {
+    const sel = document.getElementById('avatar').value;
+    ws.send(JSON.stringify({type: 'setAvatar', "avatarId": sel}));
+    status('setAvatar sent');
+    addLog('setAvatar sent');
+    // keep audio button enabled to continue? Up to spec keep enabled
+}
+
+function sendPlayAnimation() {
+    const sel = document.getElementById('animation').value;
+    const auto_idle_cb = document.getElementById('auto_idle');
+    ws.send(JSON.stringify({type: 'playAnimation', animation: sel, auto_idle: auto_idle_cb.checked}));
+    status('playAnimation sent');
+    addLog('playAnimation sent');
+    // keep audio button enabled to continue? Up to spec keep enabled
+}
+
+
+function sendSetEmotion() {
+    const sel = document.getElementById('emotion').value;
+    ws.send(JSON.stringify({type: 'setEmotion', emotion: sel}));
+    status('setEmotion sent');
+    addLog('setEmotion sent');
+    // keep audio button enabled to continue? Up to spec keep enabled
+}
+
+function sendSynthesizeSpeech() {
+    const textInput = document.getElementById('speechText');
+    const text = textInput.value.trim();
+    if (!text) {
+        alert('Please enter text to synthesize');
+        return;
+    }
+    ws.send(JSON.stringify({type: 'synthesizeSpeech', text: text}));
+    status('SynthesizeSpeech sent');
+    addLog(`SynthesizeSpeech sent: "${text}"`);
+    // Clear input after sending
+    textInput.value = '';
+}
+
+</script>
+</body>
+</html>
