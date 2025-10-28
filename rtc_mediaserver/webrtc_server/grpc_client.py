@@ -84,8 +84,6 @@ async def stream_worker_aio() -> None:
                 is_speech = True
                 is_interrupt = False
 
-                await chunks_sem.acquire()
-
                 if AUDIO_SECOND_QUEUE.qsize() > 0:
                     logger.info(f"AUDIO_SECOND_QUEUE.qsize={AUDIO_SECOND_QUEUE.qsize()}")
                     audio_sec, sr = AUDIO_SECOND_QUEUE.get_nowait()
@@ -137,6 +135,9 @@ async def stream_worker_aio() -> None:
                             set_emotion=render_service_pb2.SetEmotion(emotion=evt_payload))
 
                 logger.info("Sent audio chunk to render service (pending=%d)",len(pending_audio))
+
+                await chunks_sem.acquire()
+
                 await asyncio.sleep(0)
 
             logger.info("Sender exited")
