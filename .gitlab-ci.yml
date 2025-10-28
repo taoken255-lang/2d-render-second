@@ -24,7 +24,7 @@ build:
     - docker build -t ${APP_PROD_IMAGE} .
     - docker push ${APP_PROD_IMAGE}
   rules:
-    - if: '$CI_COMMIT_BRANCH == "feature/deploy"'
+    - if: '$CI_COMMIT_BRANCH == "deploy"'
 
 deploy master:
   <<: *tags
