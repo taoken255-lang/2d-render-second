@@ -1,0 +1,39 @@
+stages:
+  - build
+  - deploy
+
+image: docker/compose:1.29.2
+
+variables:
+  IMAGE: ${CI_REGISTRY_IMAGE}:${CI_PIPELINE_ID}
+  APP_PROD_IMAGE: ${CI_REGISTRY_IMAGE}/prod:${CI_PIPELINE_ID}
+  GIT_SUBMODULE_STRATEGY: recursive
+
+.tags: &tags
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  after_script:
+    - docker logout $CI_REGISTRY
+
+build:
+  <<: *tags
+  stage: build
+  tags:
+    - dhs-endpoints-01
+  script:
+    - docker build -t ${APP_PROD_IMAGE} .
+    - docker push ${APP_PROD_IMAGE}
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "feature/master"'
+
+deploy master:
+  <<: *tags
+  stage: deploy
+  tags:
+    - clouren-stand-06-shell
+  script:
+    - docker rm -f ${CI_PROJECT_NAME}-prod || true
+    - docker run -p 7011:7011 -d --name ${CI_PROJECT_NAME}-prod --restart=always -gpus all -v /opt/2d-render/checkpoints:/app/checkpoints -v /opt/2d-render/upernet-convnext-tiny:/app/upernet-convnext-tiny -v /opt/2d-render/BiRefNet-portrait:/app/BiRefNet-portrait -v /opt/2d-render/assets:/app/assets -v /opt/2d-render/cache:/app/cache -env-file ${ENV_TEST} --network host ${APP_PROD_IMAGE}
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      when: manual
