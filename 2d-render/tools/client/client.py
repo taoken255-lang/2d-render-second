@@ -9,9 +9,9 @@ import time
 import numpy as np
 
 
-def video_request(audio_file):
+def video_request(audio_file, avatar_id):
 	with wave.open(audio_file, 'rb') as wf:
-		yield RenderRequest(set_avatar=SetAvatar(avatar_id="ermakova"), online=True, alpha=False, output_format="RGB")
+		yield RenderRequest(set_avatar=SetAvatar(avatar_id=avatar_id), online=True, alpha=False, output_format="RGB")
 		logger.info("AVATAR SENT")
 
 		sample_rate = wf.getframerate()
@@ -26,29 +26,9 @@ def video_request(audio_file):
 			logger.info("AUD SENT")
 
 			# if cur_idx == anim_idx:  # or cur_idx == anim_idx + 1:
-			# 	yield RenderRequest(play_animation=PlayAnimation(animation="idle2"))
-			# 	yield RenderRequest(play_animation=PlayAnimation(animation="idle"))
-			# 	yield RenderRequest(play_animation=PlayAnimation(animation="idle3"))
-			# 	yield RenderRequest(play_animation=PlayAnimation(animation="idle3"))
-			# 	yield RenderRequest(play_animation=PlayAnimation(animation="idle3"))
-			# 	yield RenderRequest(play_animation=PlayAnimation(animation="Idle_Drinking"))
-			# 	yield RenderRequest(play_animation=PlayAnimation(animation="Idle_Drinking"))
-			# 	yield RenderRequest(play_animation=PlayAnimation(animation="Idle_Drinking"))
-				# yield RenderRequest(set_emotion=SetEmotion(emotion="angry"))
-				# logger.info("EMOTION SENT")
-				# yield RenderRequest(play_animation=PlayAnimation(animation="point_suit"))
-			# 	# yield RenderRequest(play_animation=PlayAnimation(animation="talk_suit"))
-			# 	# yield RenderRequest(play_animation=PlayAnimation(animation="idle"))
-			# 	logger.info("sent play animation command")
-			# elif cur_idx == anim_idx + 2:
-			# 	yield RenderRequest(set_emotion=SetEmotion(emotion="happy"))
-			# 	logger.info("EMOTION SENT")
-			# elif cur_idx == anim_idx + 4:
-			# 	yield RenderRequest(set_emotion=SetEmotion(emotion="sad"))
-			# 	logger.info("EMOTION SENT")
-			# elif cur_idx == anim_idx + 6:
-			# 	yield RenderRequest(set_emotion=SetEmotion(emotion="angry"))
-			# 	logger.info("EMOTION SENT")
+				# yield RenderRequest(play_animation=PlayAnimation(animation="Info_FinanceInfographics"))
+				# yield RenderRequest(play_animation=PlayAnimation(animation="Working_TypingV4"))
+				# yield RenderRequest(play_animation=PlayAnimation(animation="Speaking_SmallTalkV1"))
 
 			time.sleep(0.3)
 			cur_idx += 1
@@ -73,12 +53,12 @@ def image_request(audio_file, image_file):
 		logger.info(audio_chunk)
 		logger.info((sample_rate, 16))
 		while chunk := wf.readframes(audio_chunk):
-			yield RenderRequest(audio=AudioChunk(data=chunk, sample_rate=sample_rate, bps=bps))
+			yield RenderRequest(audio=AudioChunk(data=chunk, sample_rate=sample_rate, bps=bps, is_voice=False))
 			logger.info("AUD SENT")
 			time.sleep(0.3)
 
 
-def video_run(audio_file, url):
+def video_run(audio_file, avatar_id, url):
 	creds = ssl_channel_credentials()
 	channel = grpc.secure_channel(url, credentials=creds, options=[
 		('grpc.max_receive_message_length', 10 * 1024 * 1024),
@@ -86,13 +66,13 @@ def video_run(audio_file, url):
 	])
 	stub = RenderServiceStub(channel)
 
-	response_stream = stub.RenderStream(video_request(audio_file))
+	response_stream = stub.RenderStream(video_request(audio_file, avatar_id))
 	img_idx = 0
 	for idxa, response_chunk in enumerate(response_stream):
 		logger.info(f"CHUNK {idxa}")
 		if response_chunk.WhichOneof("chunk") == "video":
 			logger.info(f"SAVE IMAGE {img_idx}")
-			logger.info(img_idx)
+			logger.info(f"{response_chunk.video.width}x{response_chunk.video.height}")
 			img = Image.frombytes("RGB", (response_chunk.video.width, response_chunk.video.height),
 			                      response_chunk.video.data, "raw")
 			img.save(f"tools/client/imgs/frame_{img_idx}.png")
@@ -105,19 +85,19 @@ def video_run(audio_file, url):
 			logger.info(f"EMOTION SET {response_chunk.emotion_set.emotion_name}")
 
 
-def local_video_run(audio_file, port):
+def local_video_run(audio_file, avatar_id, port):
 	channel = grpc.insecure_channel(f"localhost:{port}", options=[
 		('grpc.max_receive_message_length', 10 * 1024 * 1024),
 		('grpc.max_send_message_length', 10 * 1024 * 1024),
 	])
 	stub = RenderServiceStub(channel)
-	response_stream = stub.RenderStream(video_request(audio_file))
+	response_stream = stub.RenderStream(video_request(audio_file, avatar_id))
 	img_idx = 0
 	for idxa, response_chunk in enumerate(response_stream):
 		logger.info(f"CHUNK {idxa}")
 		if response_chunk.WhichOneof("chunk") == "video":
 			logger.info(f"SAVE IMAGE {img_idx}")
-			logger.info(img_idx)
+			logger.info(f"{response_chunk.video.width}x{response_chunk.video.height}")
 			img = Image.frombytes("RGB", (response_chunk.video.width, response_chunk.video.height),
 			                      response_chunk.video.data, "raw")
 			img.save(f"tools/client/imgs/frame_{img_idx}.png")
@@ -180,6 +160,8 @@ def local_image_run(audio_file, image_file, port):
 			logger.info(f"END ANIMATION {response_chunk.end_animation.animation_name}")
 		elif response_chunk.WhichOneof("chunk") == "emotion_set":
 			logger.info(f"EMOTION SET {response_chunk.emotion_set.emotion_name}")
+		elif response_chunk.WhichOneof("chunk") == "request_error":
+			logger.info(f"REQUEST ERROR: {response_chunk.request_error.error_type}, {response_chunk.request_error.error_message}")
 
 
 def info(url):
@@ -203,11 +185,12 @@ if __name__ == '__main__':
 	"""
 
 	url = "2d-dev.digitalavatars.ru"
-	aud_file = "tools/client/res/blue_woman_3.2.wav"
-	img_file = "tools/client/res/test1.png"
-	port = "8500"
+	aud_file = "tools/client/res/ved_00.wav"
+	img_file = "tools/client/res/gomer.png"
+	avatar_id = "vedenina2"
+	port = "8503"
 	# info(url)
-	# local_video_run(aud_file, port)
-	# video_run(aud_file, url)
-	# local_image_run(aud_file, img_file, port)
-	image_run(aud_file, img_file, url)
+	# local_video_run(aud_file, avatar_id, port)
+	# video_run(aud_file, avatar_id, url)
+	local_image_run(aud_file, img_file, port)
+	# image_run(aud_file, img_file, url)

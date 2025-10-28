@@ -1,77 +1,28 @@
-from proto import render_service_pb2_grpc
-from proto.render_service_pb2 import RenderResponse, VideoChunk, StartAnimation, EndAnimation, AvatarSet, InfoResponse, \
-	ItemList, RequestError, EmotionSet
-from service.render import RenderService, EventObject
-from loguru import logger
-import threading
-from threading import Event
 from multiprocessing import Queue as mQueue, Process, Value
-import numpy as np
-import time
+from threading import Event, Thread, Lock
 from queue import Queue as tQueue
 from grpc import RpcError
-from uuid import uuid4
-from enum import Enum
 from config import Config
+from loguru import logger
+from uuid import uuid4
+import numpy as np
 import imageio
+import signal
+import time
 import json
+import sys
 import os
 
+from proto import render_service_pb2_grpc
+from proto.render_service_pb2 import RenderResponse, VideoChunk, StartAnimation, EndAnimation, AvatarSet, InfoResponse, ItemList, RequestError, EmotionSet
 
-#
-# gc.disable()
-
-
-class IPCDataType(Enum):
-	IMAGE = 1
-	AUDIO = 2
-	COMMAND = 3
-
-
-class CommandDataType(Enum):
-	SetAvatar = 1
-	PlayAnimation = 2
-	SetEmotion = 3
-
-
-class ErrorObject:
-	def __init__(self, error_type: str, error_message: str):
-		self.error_type = error_type
-		self.error_message = error_message
-
-
-class IPCObject:
-	def __init__(self, data_type: IPCDataType, data: object):
-		self.data_type = data_type
-		self.data = data
-
-
-class ImageObject:
-	def __init__(self, data: bytes, height: int, width: int):
-		self.data = data
-		self.height = height
-		self.width = width
-
-
-class AudioObject:
-	def __init__(self, data: bytes, sample_rate: int, bps: int, is_voice: bool):
-		self.data = data
-		self.sample_rate = sample_rate
-		self.bps = bps
-		self.is_voice = is_voice
-
-
-class CommandObject:
-	def __init__(self, command_type: CommandDataType, command_data: str, additional_data: dict = {}):
-		self.command_type = command_type
-		self.command_data = command_data
-		self.additional_data = additional_data
-
+from service.render import RenderService
+from service.object_models import IPCObject, IPCDataType, CommandObject, CommandDataType, AudioObject, ImageObject, EventObject, ErrorObject, ErrorDataType
 
 class SharedValue:
 	def __init__(self, value):
 		self._value = value
-		self._lock = threading.Lock()
+		self._lock = Lock()
 
 	def set(self, value):
 		with self._lock:
@@ -81,6 +32,13 @@ class SharedValue:
 		with self._lock:
 			return self._value
 
+
+def clear_queue(q):
+	try:
+		while not q.empty():
+			q.get_nowait()
+	except Exception:
+		pass
 
 #
 # class InputObject:
@@ -127,6 +85,27 @@ def get_avatars(folder_path="/app/assets/"):
 	return result
 
 
+def get_latest_version_folder(base_path: str) -> str | None:
+	versions = []
+	for name in os.listdir(base_path):
+		if os.path.isdir(os.path.join(base_path, name)):
+			try:
+				major, middle, minor = map(int, name.split("."))
+				versions.append((major, middle, minor, name))
+			except ValueError:
+				logger.info(f"FOUND NOVERSION FOLDER NAME {name}")
+				continue
+			except Exception:
+				logger.info(f"EXCEPTION WHILE READING VERSIONS FOR AVATAR")
+				continue
+
+	if not versions:
+		return None
+
+	versions.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+	return versions[0][3]
+
+
 def render_stream(chunk, render, is_last=False):
 	BitsPerSample = 16
 	NumChannels = 1
@@ -153,6 +132,12 @@ def render_stream(chunk, render, is_last=False):
 
 
 def stream_frames_thread(render, video_queue, height, width, start_time, request_id):
+	frame_idx = 0
+	first_frame_time = None
+	every_frame_time = 0.04
+	realtime_metric = 0
+	current_frame_time = None
+
 	if int(Config.MAX_SIZE) < width:
 		new_width = int(Config.MAX_SIZE)
 		new_height = int(round(height * int(Config.MAX_SIZE) / width))
@@ -187,8 +172,13 @@ def stream_frames_thread(render, video_queue, height, width, start_time, request
 			if isinstance(frame, EventObject):
 				video_queue.put(frame)
 				continue
-			logger.info(f"GOT IMAGE {width}x{height}, {len(frame)}")
+			
+			if first_frame_time is None:
+				first_frame_time = time.perf_counter()
+			realtime_metric = (time.perf_counter() - first_frame_time) - frame_idx * every_frame_time
+			logger.info(f"Frame ready from NN {frame_idx}, realtime_metric: {realtime_metric}, {time.perf_counter() - realtime_metric} {width}x{height}, {len(frame)}")
 			video_queue.put(ImageObject(data=frame, height=height, width=width))
+			frame_idx += 1
 		# dt_start_time = dt_cur_time
 		# dt_first_chunk_flag = True
 		# time_difference = dt_cur_time - dt_first_cur_time
@@ -218,7 +208,7 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 		while True:
 			chunk = audio_queue.get()
 			if is_online_chunk:
-				render = RenderService(is_online=chunk["is_online"], sampling_timestamps=sampling_timestamps.value)
+				render = RenderService(is_online=chunk["is_online"], sampling_timestamps=sampling_timestamps.value, video_queue=video_queue)
 				is_online_chunk = False
 				continue
 
@@ -237,10 +227,10 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 					img_height -= 1
 				if img_width % 2 != 0:
 					img_width -= 1
-				render.handle_image(image_chunk=img_data)
+				render.handle_image(image_chunk=img_data, video_queue=video_queue)
 
 				logger.info("START STREAMING THREAD")
-				stream_thread = threading.Thread(target=stream_frames_thread, args=(
+				stream_thread = Thread(target=stream_frames_thread, args=(
 					render, video_queue, img_height, img_width, start_time, request_id,))
 				stream_thread.start()
 
@@ -254,47 +244,50 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 					# render.set_avatar(avatar_id=chunk.data.command_data)
 
 					avatar_name = chunk.data.command_data
+					idle_name = chunk.data.additional_data.get("idle_name", "idle") or "idle"
 
 					if avatar_name not in get_avatars():
-						video_queue.put(ErrorObject(error_type="avatar",
+						video_queue.put(ErrorObject(error_type=ErrorDataType.Avatar,
 						                            error_message=f"Avatar {avatar_name} does not exist"))
 						continue
 
-					reader = imageio.get_reader(f'/app/assets/{avatar_name}/{avatar_name}.mp4')
+					last_version = get_latest_version_folder(f"/app/assets/{avatar_name}")
+					if last_version:
+						base_path = f"/app/assets/{avatar_name}/{last_version}"
+					else:
+						base_path = f"/app/assets/{avatar_name}"
+					reader = imageio.get_reader(f"{base_path}/{avatar_name}.mp4")
 					size = reader.get_meta_data()["size"]
 					img_width = int(size[0])
 					img_height = int(size[1])
 
-					if os.path.exists(f'/app/assets/{avatar_name}/ditto.json'):
-						with open(f'/app/assets/{avatar_name}/ditto.json', "r", encoding="utf-8") as f:
+					if os.path.exists(f"{base_path}/ditto.json"):
+						with open(f"{base_path}/ditto.json", "r", encoding="utf-8") as f:
 							ditto_config = json.load(f)
 					else:
 						ditto_config = {}
 
-					if os.path.exists(f'/app/assets/{avatar_name}/emotions/'):
-						render.handle_video(
-							video_path=f'/app/assets/{avatar_name}/{avatar_name}.mp4',
-							video_info_path=f'/app/assets/{avatar_name}/{avatar_name}.json',
-							emotions_path=f'/app/assets/{avatar_name}/emotions/',
-							ditto_config=ditto_config
-						)
-					else:
-						render.handle_video(
-							video_path=f'/app/assets/{avatar_name}/{avatar_name}.mp4',
-							video_info_path=f'/app/assets/{avatar_name}/{avatar_name}.json',
-							ditto_config=ditto_config
-						)
+					emotions_exist = os.path.exists(f"{base_path}/emotions/")
+					render.handle_video(
+						base_path=base_path,
+						avatar_name=avatar_name,
+						version_name=last_version,
+						emotions=emotions_exist,
+						ditto_config=ditto_config,
+						video_queue=video_queue,
+						idle_name=idle_name
+					)
 
 					logger.info("START STREAMING THREAD")
 					video_queue.put(EventObject(event_name="avatar_set", event_data={"avatar_id": avatar_name}))
-					stream_thread = threading.Thread(target=stream_frames_thread, args=(
+					stream_thread = Thread(target=stream_frames_thread, args=(
 						render, video_queue, img_height, img_width, start_time, request_id,))
 					stream_thread.start()
 
 				elif chunk.data.command_type == CommandDataType.PlayAnimation:
 					animation_name = chunk.data.command_data
 					if animation_name not in get_avatars()[avatar_name]["animations"]:
-						video_queue.put(ErrorObject(error_type="animation",
+						video_queue.put(ErrorObject(error_type=ErrorDataType.Animation,
 						                            error_message=f"Animation {animation_name} for avatar {avatar_name} does not exist"))
 						continue
 					render.play_animation(animation=chunk.data.command_data, auto_idle=chunk.data.additional_data["auto_idle"])
@@ -364,7 +357,7 @@ def reader_thread(request_iterator, audio_queue, is_online, is_alpha, output_for
 					audio_queue.put({"is_online": chunk.online})
 					audio_queue.put(IPCObject(data_type=IPCDataType.COMMAND,
 					                          data=CommandObject(command_type=CommandDataType.SetAvatar,
-					                                             command_data=chunk.set_avatar.avatar_id)))
+					                                             command_data=chunk.set_avatar.avatar_id, additional_data={"idle_name": chunk.set_avatar.idle_name})))
 
 				elif chunk.WhichOneof("command") == "play_animation":
 					audio_queue.put(IPCObject(data_type=IPCDataType.COMMAND,
@@ -376,6 +369,9 @@ def reader_thread(request_iterator, audio_queue, is_online, is_alpha, output_for
 					audio_queue.put(IPCObject(data_type=IPCDataType.COMMAND,
 					                          data=CommandObject(command_type=CommandDataType.SetEmotion,
 					                                             command_data=chunk.set_emotion.emotion)))
+
+				# elif chunk.WhichOneof("command") == "interrupt":
+				# 	audio_queue...
 
 		except RpcError as e:
 			logger.error(f"GOT RPCERROR EXCEPTION IN READER THREAD {str(e)} START CLOSING PROCESS")
@@ -394,11 +390,14 @@ def get_mqueue_thread(from_queue, to_queue, is_alpha, output_format, alpha_servi
 			while True:
 				frame = from_queue.get(timeout=300)
 				if isinstance(frame, EventObject):
+					# logger.info("EVENTOBJECT")
 					to_queue.put(frame)
 					continue
 				elif isinstance(frame, ErrorObject):
+					# logger.info("ERROROBJECT")
 					to_queue.put(frame)
 					continue
+				# logger.info("FRAMEOBJECT")
 				logger.debug("CHUNK DITTO -> LAST")
 				if frame.data is None:
 					logger.debug("CHUNK DITTO IS NONE - BREAK")
@@ -470,13 +469,18 @@ def get_mqueue_thread(from_queue, to_queue, is_alpha, output_format, alpha_servi
 class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 	def __init__(self, alpha_service):
 		self.alpha_service = alpha_service
+		self.critical_exceptions = [ErrorDataType.Initialization]
+		self.important_exceptions = [ErrorDataType.Handling]
 
 	def RenderStream(self, request_iterator, context):
 		request_id = str(uuid4())
+		frame_idx = 0
 		with logger.contextualize(request_id=request_id):
 			audio_queue = mQueue()
+			# audio_queue
 			video_queue = mQueue()
 			local_queue = tQueue()
+			# local_queue
 			is_online = Event()
 			is_alpha = Event()
 			output_format = SharedValue("")
@@ -487,11 +491,11 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 			                         args=(audio_queue, video_queue, full_start_time, sampling_timestamps, request_id))
 			render_process.start()
 
-			reader_trd = threading.Thread(target=reader_thread, args=(
+			reader_trd = Thread(target=reader_thread, args=(
 				request_iterator, audio_queue, is_online, is_alpha, output_format, sampling_timestamps, request_id, context))
 			reader_trd.start()
 
-			mqueue_trd = threading.Thread(target=get_mqueue_thread,
+			mqueue_trd = Thread(target=get_mqueue_thread,
 			                              args=(video_queue, local_queue, is_alpha, output_format, self.alpha_service,
 			                                    request_id,))
 			mqueue_trd.start()
@@ -503,6 +507,10 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 			# max_time = 0
 			# chunk_counter = 0
 			avatar_sent_mem = None
+
+			first_frame_time = None
+			every_frame_time = 0.04
+			realtime_metric = 0
 			try:
 				while True:
 					frame = local_queue.get()
@@ -527,10 +535,15 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 
 						continue
 					elif isinstance(frame, ErrorObject):
-						yield RenderResponse(
-							request_error=RequestError(error_type=frame.error_type, error_message=frame.error_message))
-						logger.error(
-							f"GOT ERROR OBJECT. ERROR TYPE: {frame.error_type} ERROR MESSAGE: {frame.error_message}")
+						yield RenderResponse(request_error=RequestError(error_type=str(frame.error_type), error_message=frame.error_message))
+						logger.error(f"GOT ERROR OBJECT. ERROR TYPE: {str(frame.error_type)} ERROR MESSAGE: {frame.error_message}")
+
+						if frame.error_type in self.critical_exceptions:
+							logger.info("KILL CONTAINER")
+							os._exit(1)
+						elif frame.error_type in self.important_exceptions:
+							logger.info("STOP PROCESS")
+							break
 						continue
 					# if frame.error_type == "avatar":
 					# 	break
@@ -560,15 +573,20 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 					logger.debug(f"CLIENT: {active_client}")
 					if not active_client:
 						raise RpcError
-					logger.debug(f"SEND")
+					logger.info(f"SEND {frame_idx}")
 					if avatar_sent_mem:
 						yield RenderResponse(
 							avatar_set=AvatarSet(avatar_id=avatar_sent_mem.event_data["avatar_id"]))
 						logger.info(f"SENT AVATAR SET EVENT")
 						avatar_sent_mem = None
-					logger.info(f"{frame.width}x{frame.height}, {len(frame.data)}")
-					yield RenderResponse(video=VideoChunk(data=frame.data, width=frame.width, height=frame.height))
-					logger.info(f"SENT")
+					# logger.info(f"{frame.width}x{frame.height}, {len(frame.data)}")
+					yield RenderResponse(video=VideoChunk(data=frame.data, width=frame.width, height=frame.height, frame_idx=frame_idx))
+					if first_frame_time is None:
+						first_frame_time = time.perf_counter()
+					realtime_metric = (time.perf_counter() - first_frame_time) - frame_idx * every_frame_time
+					logger.info(f"SENT {frame_idx}, realtime_metric: {realtime_metric}")
+					
+					frame_idx += 1
 				# logger.info(f"END GRPC YIELDING {chunk_counter}")
 				# start_time = cur_time
 				# first_chunk_flag = True
@@ -576,6 +594,8 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 				logger.error(f"GOT RPCERROR EXCEPTION IN RENDER STREAM {str(e)} START CLOSING PROCESS")
 			except Exception as e:
 				logger.error(f"GOT EXCEPTION IN RENDER STREAM {str(e)} START CLOSING PROCESS")
+			except SystemExit as e:
+				raise e
 			except BaseException as e:
 				logger.error(f"GOT BASEEXCEPTION IN RENDER STREAM {str(e)} START CLOSING PROCESS")
 			video_queue.put(ImageObject(data=None, height=None, width=None))

@@ -29,7 +29,7 @@ def create_request_body_http(tts_text, model_id, *,
         "model_id": model_id,
         "apply_text_normalization": normalization,
         "language_code": language_code,
-        #"optimize_streaming_latency": settings.elevenlabs_optimize
+        "optimize_streaming_latency": settings.elevenlabs_optimize
     }
     voice_settings = {
         "speed": settings.elevenlabs_voice_speed
@@ -69,8 +69,9 @@ async def synthesize(
     for line_text in lines_to_send:
         logger.info(f"11labs - http, text = {line_text}")
         try:
-            url = (f"{settings.elevenlabs_api_url}v1/text-to-speech/{settings.elevenlabs_voice_id}/stream?output_format=pcm_{AUDIO_SETTINGS.sample_rate}")
-                   #f"&optimize_streaming_latency={settings.elevenlabs_optimize}")
+            url = (f"{settings.elevenlabs_api_url}v1/text-to-speech/{settings.elevenlabs_voice_id}/stream?output_format=pcm_{AUDIO_SETTINGS.sample_rate}"
+                   f"&optimize_streaming_latency={settings.elevenlabs_optimize}")
+            logger.info(f"11labs request url [{url}]")
             headers = {
                 "xi-api-key": settings.elevenlabs_api_key,
                 "Content-Type": "application/json"
@@ -78,17 +79,21 @@ async def synthesize(
             request_body = create_request_body_http(tts_text=line_text,
                                                     model_id=settings.elevenlabs_model_id,
                                                     stability=settings.elevenlabs_stability)
-
+            logger.info(f"11labs start request")
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, headers=headers, json=request_body) as resp:
                     if resp.status == 200:
+                        logger.info(f"11labs response ok")
                         async for chunk in resp.content.iter_chunked(16384):
+                            logger.info(f"11labs yield chunk")
                             yield chunk
                     else:
                         message = await resp.text()
+                        logger.error(f"11labs error {message}")
                         raise Exception(message)
+            logger.info("11labs end request")
         except BaseException as exc:
-            logger.error(f"Unknown error in elevenlabs: {exc}")
+            logger.error(f"Unknown error in 11labs: {exc}")
             logger.error(traceback.format_exc())
 
 async def voices():
@@ -153,6 +158,7 @@ async def synthesize_worker():
     while True:
         try:
             text, state = await SENTENCES_QUEUE.get()
+            logger.info(f"11labs Synthesize worker got sentence")
             SYNTHESIZE_IN_PROGRESS.set()
             t1 = time.time()
             STATE.tts_start = time.time()
@@ -172,7 +178,11 @@ async def synthesize_worker():
                 await asyncio.sleep(0)
                 logger.info("Queued tail audio chunk (%d samples)", arr.shape[0])
             AUDIO_SECOND_QUEUE.put_nowait((None, None))
+            logger.info(f"11labs put eos mark")
         except BaseException as e:
             logger.error(e)
+            import traceback
+            logger.error(traceback.format_tb(e.__traceback__))
         finally:
             SYNTHESIZE_IN_PROGRESS.clear()
+            logger.info(f"11labs end sentence")

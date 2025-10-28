@@ -1,43 +1,49 @@
+from multiprocessing import Queue
+from loguru import logger
 import numpy as np
 import io
 import librosa
 import wave
-import json
 import time
 
-from config import Config
-from loguru import logger
+from ditto.stream_pipeline_online import StreamSDK as onlineSDK
 
-from ditto.stream_pipeline_online import StreamSDK as onlineSDK, EventObject, RenderEmotionObject, RenderAnimationObject
-from ditto.stream_pipeline_offline import StreamSDK as offlineSDK
+from service.object_models import RenderAnimationObject, RenderEmotionObject, ErrorObject, ErrorDataType
+from config import Config
 
 
 class RenderService:
-	def __init__(self, is_online: bool = False, sampling_timestamps: int = 0):
-		self.is_online = is_online
-		self.sampling_timestamps = sampling_timestamps
-		cfg_pkl = f"{Config.WEIGHTS_PATH}/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl"
-		data_root = Config.DITTO_DATA_ROOT
+	def __init__(self, video_queue: Queue, is_online: bool = False, sampling_timestamps: int = 0):
+		try:
+			self.is_online = is_online
+			self.sampling_timestamps = sampling_timestamps
+			cfg_pkl = f"{Config.WEIGHTS_PATH}/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl"
+			data_root = Config.DITTO_DATA_ROOT
 
-		if is_online:
-			self.sdk = onlineSDK(cfg_pkl, data_root)
-			self.render_chunk = self.render_chunk_online
-		else:
-			self.sdk = onlineSDK(cfg_pkl, data_root)
-			self.render_chunk = self.render_chunk_online
+			if is_online:
+				self.sdk = onlineSDK(cfg_pkl, data_root)
+				self.render_chunk = self.render_chunk_online
+			else:
+				self.sdk = onlineSDK(cfg_pkl, data_root)
+				self.render_chunk = self.render_chunk_online
 
-		self.bits_per_sample = 16
-		self.num_channels = 1
-		self.samples_per_sec = 16000
-		self.chunk_duration = 2.0
+			self.bits_per_sample = 16
+			self.num_channels = 1
+			self.samples_per_sec = 16000
+			self.chunk_duration = 2.0
 
-		self.audio_buffer = np.zeros((3 * 640,), dtype=np.float32) if self.is_online else np.array([], dtype=np.float32)
+			self.audio_buffer = np.zeros((3 * 640,), dtype=np.float32) if self.is_online else np.array([], dtype=np.float32)
 
-		self.is_setup_nd = True
-		self.timer_first_flag = True
-		self.start_time = 0
-		self.animation_to_play = []
-		self.emotion_to_play = []
+			self.is_setup_nd = True
+			self.timer_first_flag = True
+			self.start_time = 0
+			self.animation_to_play = []
+			self.emotion_to_play = []
+		except Exception as e:
+			logger.info(f"ERROR WHILE INITIALIZING {str(e)}")
+			video_queue.put(ErrorObject(error_type=ErrorDataType.Initialization, error_message=f"Error during initialization of network: {str(e)}"))
+
+	# os.kill(os.getpid(), signal.SIGTERM)
 
 	def set_avatar(self, avatar_id: str):
 		pass
@@ -52,44 +58,59 @@ class RenderService:
 		# self.emotion_to_play.append(emotion)
 		logger.info(f"emotion got: {emotion}")
 
-	def handle_image(self, image_chunk):
+	def handle_image(self, image_chunk, video_queue: Queue):
+		try:
+			if self.sampling_timestamps != 0:
+				sts = self.sampling_timestamps
+			else:
+				sts = int(Config.ONLINE_STREAMING_TIMESTAMPS) if self.is_online else int(Config.ONLINE_RENDER_TIMESTAMPS)
 
-		if self.sampling_timestamps != 0:
-			sts = self.sampling_timestamps
-		else:
-			sts = int(Config.ONLINE_STREAMING_TIMESTAMPS) if self.is_online else int(Config.ONLINE_RENDER_TIMESTAMPS)
+			args = {"online_mode": self.is_online,
+			        "sampling_timesteps": sts,
+			        "max_size": int(Config.MAX_SIZE),
+			        "QUEUE_MAX_SIZE": int(Config.QUEUE_MAX_SIZE),
+			        "MS_MAX_SIZE": int(Config.MS_MAX_SIZE),
+			        "A2M_MAX_SIZE": int(Config.A2M_MAX_SIZE)}
+			self.sdk.setup(source_path=image_chunk, output_path="", **args)
+		except Exception as e:
+			logger.info(f"ERROR WHILE HANDLING IMAGE {str(e)}")
+			video_queue.put(ErrorObject(error_type=ErrorDataType.Handling, error_message=f"Error during image initialization: {str(e)}"))
 
-		args = {"online_mode": self.is_online,
-		        "sampling_timesteps": sts,
-		        "max_size": int(Config.MAX_SIZE),
-		        "QUEUE_MAX_SIZE": int(Config.QUEUE_MAX_SIZE),
-		        "MS_MAX_SIZE": int(Config.MS_MAX_SIZE),
-		        "A2M_MAX_SIZE": int(Config.A2M_MAX_SIZE)}
-		self.sdk.setup(source_path=image_chunk, output_path="", **args)
+	def handle_video(
+			self,
+	        base_path: str,
+	        avatar_name: str,
+	        version_name: str,
+	        emotions: bool,
+	        ditto_config: dict,
+	        video_queue: Queue,
+	        idle_name: str = "idle"
+	):
+		try:
+			if self.sampling_timestamps != 0:
+				sts = self.sampling_timestamps
+			else:
+				sts = int(Config.ONLINE_STREAMING_TIMESTAMPS) if self.is_online else int(Config.ONLINE_RENDER_TIMESTAMPS)
 
-	def handle_video(self, video_path: str, video_info_path: str, ditto_config: dict, emotions_path: str = None):
+			args = {"online_mode": self.is_online,
+			        "video_segments_path": f"{base_path}/{avatar_name}.json",
+			        "emotions_path": f"{base_path}/emotions/" if emotions else None,
+			        "sampling_timesteps": sts,
+			        "max_size": int(Config.MAX_SIZE),
+			        "QUEUE_MAX_SIZE": int(Config.QUEUE_MAX_SIZE),
+			        "MS_MAX_SIZE": int(Config.MS_MAX_SIZE),
+			        "A2M_MAX_SIZE": int(Config.A2M_MAX_SIZE),
+			        "idle_name": idle_name,
+			        "version_name": version_name}
+			logger.info(ditto_config)
+			args.update(ditto_config)
+			if sts == 5:
+				args["sampling_timesteps"] = 5
 
-		if self.sampling_timestamps != 0:
-			sts = self.sampling_timestamps
-		else:
-			sts = int(Config.ONLINE_STREAMING_TIMESTAMPS) if self.is_online else int(Config.ONLINE_RENDER_TIMESTAMPS)
-
-
-
-		args = {"online_mode": self.is_online,
-				"video_segments_path": video_info_path,
-				"emotions_path": emotions_path,
-		        "sampling_timesteps": sts,
-		        "max_size": int(Config.MAX_SIZE),
-		        "QUEUE_MAX_SIZE": int(Config.QUEUE_MAX_SIZE),
-		        "MS_MAX_SIZE": int(Config.MS_MAX_SIZE),
-		        "A2M_MAX_SIZE": int(Config.A2M_MAX_SIZE)}
-		logger.info(ditto_config)
-		args.update(ditto_config)
-		if sts == 5:
-			args["sampling_timesteps"] = 5
-
-		self.sdk.setup(source_path=video_path, output_path="", **args)
+			self.sdk.setup(source_path=f"{base_path}/{avatar_name}.mp4", output_path="", **args)
+		except Exception as e:
+			logger.info(f"ERROR WHILE HANDLING VIDEO {str(e)}")
+			video_queue.put(ErrorObject(error_type=ErrorDataType.Handling, error_message=f"Error during video initialization {str(e)}"))
 
 	def render_chunk_offline(self, audio_chunk, frame_rate: int, is_last: bool):
 		if not is_last:
@@ -144,7 +165,7 @@ class RenderService:
 			if len(audio_chunk) < split_len:
 				if is_last:
 					logger.debug("IS LAST")
-					audio_chunk = np.pad(audio_chunk, (0, split_len - len(audio_chunk)), mode="constant")  # с конца нули до длины split_len
+					audio_chunk = np.pad(audio_chunk, (0, split_len - len(audio_chunk)), mode="constant")
 					if self.timer_first_flag:
 						self.start_time = time.perf_counter()
 						self.timer_first_flag = False

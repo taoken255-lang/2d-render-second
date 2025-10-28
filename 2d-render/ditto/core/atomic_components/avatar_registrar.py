@@ -7,6 +7,8 @@ import torch
 import os
 import pickle
 import hashlib
+import subprocess
+from pathlib import Path
 from datetime import datetime
 import glob
 
@@ -86,14 +88,60 @@ class AvatarRegistrar:
             appearance_extractor_cfg,
             motion_extractor_cfg,
         )
-        self.cache_dir = "cache/avatar_registrar"
-        os.makedirs(self.cache_dir, exist_ok=True)
+        self.cache_dir = "/app/cache"
+        # os.makedirs(self.cache_dir, exist_ok=True)
+
+    def _get_cache_key(self, source_path, max_dim, n_frames, **kwargs):
+        h = hashlib.md5()
+        with open(source_path, "rb") as f:
+            while chunk := f.read(8 * 1024 * 1024):
+                h.update(chunk)
+        return h.hexdigest()[:12]
+
+    def _convert_video(self, source_path):
+        command = [
+            "ffmpeg",
+            "-i", source_path,
+            "-c:v", "libx264",
+            "-preset", "slow",
+            "-crf", "25",
+            "-tune", "grain",
+            "-g", "1",
+            "-keyint_min", "1",
+            "-sc_threshold", "0",
+            "-bf", "0",
+            "-pix_fmt", "yuv420p",
+            f"{source_path[:-3]}_conv.mp4"
+        ]
+        result = subprocess.run(command, capture_output=True, text=True)
+
+        if result.returncode == 0:
+            print("VIDEO CONVERTED")
+        else:
+            print(f"CONVERTATION ERROR {result.stderr}")
+
+    def _load_cache(self, cache_path):
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, 'rb') as f:
+                    return pickle.load(f)
+            except:
+                pass
+        return None
+
+    def _save_cache(self, cache_path, source_info):
+        try:
+            with open(cache_path, 'wb') as f:
+                pickle.dump(source_info, f)
+        except Exception as e:
+            print(f"Failed to save cache: {e}")
 
     def register(
             self,
             source_path,  # image | video
             max_dim=1920,
             n_frames=-1,
+            version_name=None,
             **kwargs,
     ):
         """
@@ -128,6 +176,26 @@ class AvatarRegistrar:
 
         elif is_video(source_path):
             is_image_flag = False
+            p = Path(source_path)
+            avatar_name = p.stem
+            if version_name:
+                cache_path = f"{self.cache_dir}/{avatar_name}_{version_name}.pkl"
+            else:
+                cache_path = f"{self.cache_dir}/{avatar_name}.pkl"
+
+            #TODO return and test
+            # if os.path.exists(f"{source_path[:-3]}_conv.mp4"):
+            #     source_path = f"{source_path[:-3]}_conv.mp4"
+            # else:
+            #     self._convert_video(source_path=source_path)
+            #     source_path = f"{source_path[:-3]}_conv.mp4"
+            cached_result = self._load_cache(cache_path)
+            if cached_result is not None:
+                logger.info("FOUND CACHE, LOADING")
+                return cached_result
+            logger.info("NO CACHE FOUND, CREATING")
+
+
             reader = imageio.get_reader(source_path, "ffmpeg")
             new_h, new_w, rsz_flag = None, None, None
             try:
@@ -162,6 +230,9 @@ class AvatarRegistrar:
 
         source_info["sc"] = sc_f0
         source_info["is_image_flag"] = is_image_flag
+        if not is_image_flag:
+            logger.info("CACHE CREATED, SAVING")
+            self._save_cache(cache_path, source_info)
 
         return source_info
 
