@@ -21,7 +21,7 @@ build:
   tags:
     - dhs-endpoints-01
   script:
-    - docker build -t ${APP_PROD_IMAGE} .
+    - docker build -f Dockerfile.cloud -t ${APP_PROD_IMAGE} .
     - docker push ${APP_PROD_IMAGE}
   rules:
     - if: '$CI_COMMIT_BRANCH == "deploy"'
