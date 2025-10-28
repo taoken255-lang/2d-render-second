@@ -33,7 +33,7 @@ deploy master:
     - crp-instance-prod04
   script:
     - docker rm -f ${CI_PROJECT_NAME}-prod || true
-    - docker run -p 7011:7011 -d --name ${CI_PROJECT_NAME}-prod --restart=always --gpus all -v /opt/2d-render/checkpoints:/app/checkpoints -v /opt/2d-render/upernet-convnext-tiny:/app/upernet-convnext-tiny -v /opt/2d-render/BiRefNet-portrait:/app/BiRefNet-portrait -v /opt/2d-render/assets:/app/assets -v /opt/2d-render/cache:/app/cache --env-file ${ENV_TEST} --network host ${APP_PROD_IMAGE}
+    - docker run -p 7011:7011 -d --name ${CI_PROJECT_NAME}-prod --restart=always --gpus all -v /opt/2d-render/checkpoints:/app/weights/checkpoints -v /opt/2d-render/upernet-convnext-tiny:/app/weights/upernet-convnext-tiny -v /opt/2d-render/BiRefNet-portrait:/app/weights/BiRefNet-portrait -v /opt/2d-render/assets:/app/assets -v /opt/2d-render/cache:/app/cache --env-file ${ENV_TEST} --network host ${APP_PROD_IMAGE}
   rules:
     - if: '$CI_COMMIT_BRANCH == "deploy"'
       when: manual
