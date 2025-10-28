@@ -119,8 +119,8 @@ class PlayerStreamTrack(MediaStreamTrack):
             asyncio.run_coroutine_threadsafe(send_event(event), self._player.main_loop)
 
 
-        if self.kind == "video":
-            logger.info(f"FRAME_RECEIVE:WEBRTC_RECV {idx}")
+        # if self.kind == "video":
+        #     logger.info(f"FRAME_RECEIVE:WEBRTC_RECV {idx}")
 
         frame.pts = self._pts
         frame.time_base = self._tb
@@ -212,6 +212,7 @@ class WebRTCMediaPlayer:
         while not self._quit.is_set():
             if STATE.first_chunk_received:
                 if not base:
+                    #logger.info(f"_worker_dbg init base")
                     base = time.perf_counter()
                     next_deadline = base  # FIX: Инициализируем первый дедлайн
 
@@ -221,6 +222,8 @@ class WebRTCMediaPlayer:
 
                 audio_chunks = int((global_missed / AUDIO_DT) - audio_sent) + 1
                 video_chunks = int((global_missed / VIDEO_DT) - video_sent) + 1
+
+                #logger.info(f"_worker BEFORE audio_chunks={audio_chunks}, video_chunks={video_chunks}")
 
                 while audio_chunks:
                     if self._push_audio():
@@ -236,7 +239,7 @@ class WebRTCMediaPlayer:
                         break
                     video_chunks -= 1
 
-                #logger.info(f"_worker audio_chunks={audio_chunks}, video_chunks={video_chunks}")
+                #logger.info(f"_worker_dbg audio_chunks={audio_chunks}, video_chunks={video_chunks}")
 
                 # FIX: Deadline-based sleep для стабильных 20ms интервалов
                 # Вместо фиксированного sleep(0.02) спим ДО следующего дедлайна
@@ -244,6 +247,13 @@ class WebRTCMediaPlayer:
                 sleep_time = next_deadline - time.perf_counter()
                 if sleep_time > 0:
                     time.sleep(sleep_time)
+            else:
+                #logger.info(f"_worker_dbg clear base")
+                base = None
+                self._video_frames.clear()
+                self._audio_chunks.clear()
+                audio_sent = 0
+                video_sent = 0
                 # Если sleep_time <= 0 (опоздали) - не спим, компенсируем на следующей итерации
 
             # if now >= next_audio:

@@ -1,20 +1,18 @@
-import grpc
-import threading
-from concurrent import futures
 from proto import render_service_pb2_grpc
+from concurrent import futures
 from config import Config
 from loguru import logger
-import torch
+import multiprocessing
+import threading
+import grpc
 import sys
 
 from service.streaming import StreamingService
 from service.offline_alpha import OfflineAlphaService
-import multiprocessing
-
 
 logger.configure(extra={"request_id": "START SERVER"})  # Устанавливаем request_id по умолчанию
-
 logger.remove()
+
 if Config.LOG_LEVEL == "INFO":
 	logger.add(
 		sys.stdout,
@@ -71,20 +69,6 @@ def serve() -> None:
 	grpc_thread.join()
 
 
-# def cvt_custom_trt():
-#     from ditto.scripts.cvt_onnx_to_trt import main as cvt_trt
-#     onnx_dir = "./checkpoints/ditto_onnx"
-#     trt_dir = "./checkpoints/ditto_trt_custom"
-#     assert os.path.isdir(onnx_dir)
-#     os.makedirs(trt_dir, exist_ok=True)
-#     grid_sample_plugin_file = os.path.join(onnx_dir, "libgrid_sample_3d_plugin.so")
-#     logger.info("START CONVERTING")
-#     cvt_trt(onnx_dir, trt_dir, grid_sample_plugin_file)
-#     logger.info("CONVERTED")
-
-
 if __name__ == '__main__':
-	# cvt_custom_trt()
 	multiprocessing.set_start_method("spawn")
-	# logger.info(torch.cuda.get_device_capability())
 	serve()

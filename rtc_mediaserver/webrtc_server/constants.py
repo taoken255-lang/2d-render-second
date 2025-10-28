@@ -140,6 +140,13 @@ class State:
             except Exception:  # noqa: BLE001
                 break
 
+        while not SENTENCES_QUEUE.empty():
+            try:
+                SENTENCES_QUEUE.get_nowait()
+                SENTENCES_QUEUE.task_done()
+            except Exception:  # noqa: BLE001
+                break
+
         STATE.first_chunk_received = False
 
 STATE = State()

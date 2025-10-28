@@ -83,6 +83,9 @@ async def stream_worker_aio() -> None:
                 event = None
                 is_speech = True
                 is_interrupt = False
+
+                await chunks_sem.acquire()
+
                 if AUDIO_SECOND_QUEUE.qsize() > 0:
                     logger.info(f"AUDIO_SECOND_QUEUE.qsize={AUDIO_SECOND_QUEUE.qsize()}")
                     audio_sec, sr = AUDIO_SECOND_QUEUE.get_nowait()
@@ -133,8 +136,6 @@ async def stream_worker_aio() -> None:
                         yield render_service_pb2.RenderRequest(
                             set_emotion=render_service_pb2.SetEmotion(emotion=evt_payload))
 
-                await chunks_sem.acquire()
-
                 logger.info("Sent audio chunk to render service (pending=%d)",len(pending_audio))
                 await asyncio.sleep(0)
 
@@ -159,7 +160,7 @@ async def stream_worker_aio() -> None:
                 frame_idx = 0
                 try:
                     frame_idx = chunk.video.frame_idx
-                    logger.info(f"FRAME_RECEIVE:GRPC {frame_idx}")
+                    #logger.info(f"FRAME_RECEIVE:GRPC {frame_idx}")
                 except:
                     pass
                 frames += 1
@@ -171,7 +172,7 @@ async def stream_worker_aio() -> None:
                 frames_batch.append((img_np, frame_idx))
 
                 if len(frames_batch) == FRAMES_PER_CHUNK:
-                    logger.info(f"Got 15 frames for {time.time() - t_start}")
+                    logger.info(f"Got 15 frames for {time.time() - t_start}, audio pending = {len(pending_audio)}")
                     chunks_sem.release()
                     if pending_audio:
                         audio_chunk, _sr, event, is_speech, is_interrupt = pending_audio.popleft()

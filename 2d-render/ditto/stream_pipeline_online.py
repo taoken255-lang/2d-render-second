@@ -1,21 +1,12 @@
-import asyncio
+from loguru import logger
+import numpy as np
 import os
-import pickle
 import threading
 import queue
-import numpy as np
 import time
-import random
 import traceback
 import json
-import cv2
-import datetime
-
-from threading import Lock
-from tqdm import tqdm
-from loguru import logger
 import torch
-from pathlib import Path
 
 from ditto.core.atomic_components.avatar_registrar import AvatarRegistrar, smooth_x_s_info_lst
 from ditto.core.atomic_components.condition_handler import ConditionHandler, _mirror_index
@@ -24,10 +15,11 @@ from ditto.core.atomic_components.motion_stitch import MotionStitch
 from ditto.core.atomic_components.warp_f3d import WarpF3D
 from ditto.core.atomic_components.decode_f3d import DecodeF3D
 from ditto.core.atomic_components.putback import PutBack
-from ditto.core.atomic_components.writer import VideoWriterByImageIO
 from ditto.core.atomic_components.video_frame_extractor import SequentialPyAVFrameExtractor
 from ditto.core.atomic_components.wav2feat import Wav2Feat
 from ditto.core.atomic_components.cfg import parse_cfg, print_cfg
+
+from service.object_models import EventObject, RenderEmotionObject, RenderAnimationObject
 
 
 """
@@ -50,22 +42,6 @@ wav2feat_cfg:
     w2f_cfg, 
     w2f_type
 """
-
-
-class EventObject:
-    def __init__(self, event_name, event_data):
-        self.event_name = event_name
-        self.event_data = event_data
-
-
-class RenderAnimationObject:
-    def __init__(self, render_data):
-        self.render_data = render_data
-
-
-class RenderEmotionObject:
-    def __init__(self, render_data):
-        self.render_data = render_data
 
 
 class StreamSDK:
@@ -128,6 +104,7 @@ class StreamSDK:
         self.wav2feat = Wav2Feat(**wav2feat_cfg)
 
         self.seq_video_extractor = SequentialPyAVFrameExtractor()
+        self.stop_event = threading.Event()
 
     def add_video_segment(self, video_segment_name: str):
         """
@@ -254,36 +231,37 @@ class StreamSDK:
             "crop_flag_do_rot": self.crop_flag_do_rot,
         }
         n_frames = self.template_n_frames if self.template_n_frames > 0 else self.N_d  # ? -1 картинка, больше - видос
-        # logger.info(f"source_path: {source_path}")
-        if type(source_path) == bytes:
-            source_info = self.avatar_registrar(
-                source_path,
-                max_dim=self.max_size,
-                n_frames=n_frames,
-                **crop_kwargs,
-            )
-        else:
-            if kwargs.get("preprocess", False):
-                source_info = self.avatar_registrar(
-                    source_path,
-                    max_dim=self.max_size,
-                    n_frames=n_frames,
-                    **crop_kwargs,
-                )
-                with open(Path(source_path).with_suffix(".pickle"), 'wb') as f:
-                    pickle.dump(source_info, f)
-                return
-            else:
-                if os.path.isfile(Path(source_path).with_suffix(".pickle")):
-                    with open(Path(source_path).with_suffix(".pickle"), 'rb') as f:
-                        source_info = pickle.load(f)
-                else:
-                    source_info = self.avatar_registrar(
-                        source_path,
-                        max_dim=self.max_size,
-                        n_frames=n_frames,
-                        **crop_kwargs,
-                    )
+        # logger.info(f"source_path: {source_path}"
+        # if type(source_path) == bytes:
+        #     source_info = self.avatar_registrar(
+        #         source_path,
+        #         max_dim=self.max_size,
+        #         n_frames=n_frames,
+        #         **crop_kwargs,
+        #     )
+        # else:
+        #     # if kwargs.get("preprocess", False):
+        #     #     source_info = self.avatar_registrar(
+        #     #         source_path,
+        #     #         max_dim=self.max_size,
+        #     #         n_frames=n_frames,
+        #     #         **crop_kwargs,
+        #     #     )
+        #     #     with open(Path(source_path).with_suffix(".pickle"), 'wb') as f:
+        #     #         pickle.dump(source_info, f)
+        #     #     return
+        #     # else:
+        #     # if os.path.isfile(Path(source_path).with_suffix(".pickle")):
+        #     #     with open(Path(source_path).with_suffix(".pickle"), 'rb') as f:
+        #     #         source_info = pickle.load(f)
+        #     # else:
+        source_info = self.avatar_registrar(
+            source_path,
+            max_dim=self.max_size,
+            n_frames=n_frames,
+            version_name=kwargs.get("version_name", None),
+            **crop_kwargs,
+        )
 
         if len(source_info["x_s_info_lst"]) > 1 and self.smo_k_s > 1:
             source_info["x_s_info_lst"] = smooth_x_s_info_lst(source_info["x_s_info_lst"], smo_k=self.smo_k_s)
@@ -351,7 +329,6 @@ class StreamSDK:
         # self.QUEUE_TIMEOUT = None
 
         self.worker_exception = None
-        self.stop_event = threading.Event()
 
         self.audio2motion_queue = queue.Queue(maxsize=A2M_MAX_SIZE)
         self.motion_stitch_queue = queue.Queue(maxsize=MS_MAX_SIZE)
@@ -359,6 +336,15 @@ class StreamSDK:
         self.decode_f3d_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
         self.putback_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
         self.writer_queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
+
+        self.queue_list = [
+            self.audio2motion_queue,
+            self.motion_stitch_queue,
+            self.warp_f3d_queue,
+            self.decode_f3d_queue,
+            self.putback_queue,
+            self.writer_queue
+        ]
 
         self.thread_list = [
             threading.Thread(target=self.audio2motion_worker),
@@ -377,6 +363,7 @@ class StreamSDK:
         video_segments_path = kwargs.get("video_segments_path", None)
         self.video_exists = False
         if video_segments_path:
+            self.idle_name = kwargs.get("idle_name", "idle")
             self.seq_video_extractor._initialize_video(source_path)
             self.video_exists = True
             self.setup_video_segments(video_segments_path)
@@ -389,6 +376,14 @@ class StreamSDK:
 
         logger.info(f"ANIMATIONS: {self.video_exists}")
         logger.info(f"EMOTIONS: {self.emotion_exists}")
+
+    def interrupt(self):
+        try:
+            for q in self.queue_list:
+                while not q.empty():
+                    q.get_nowait()
+        except Exception:
+            pass
 
     def setup_emotions(self, emotions_path: str):
         emotions_info_path = f"{emotions_path}/info.json"
@@ -446,12 +441,12 @@ class StreamSDK:
                 self.video_segment_info = json.load(fp)
 
         self.video_segment_buffer = []
-        self.video_segment_current = "idle"
+        self.video_segment_current = self.idle_name
         self.video_segment_auto_idle = True
         self.video_segment_previous = ""
 
         # Handle global gen frame index
-        self.gen_frame_idx = self.video_segment_info["idle"]["start"]
+        self.gen_frame_idx = self.video_segment_info[self.idle_name]["start"]
         self.seq_video_extractor.seek_to_frame(self.gen_frame_idx)
 
         print(f'loaded video segments {self.video_segment_info}')
@@ -673,7 +668,7 @@ class StreamSDK:
                     self.current_emotion = None
 
                 if self.current_emotion is not None and not self.current_emotion_complete:
-                    if self.current_emotion != "idle":
+                    if self.current_emotion != self.idle_name:
                         x_exp_emo = self.emotions_exp[self.current_emotion][self.emo_frame_idx]
                         self.emo_frame_idx = (self.emo_frame_idx + 1) % self.emotions_exp[self.current_emotion].shape[0]
                         x_exp_emo *= min(self.current_emotion_gain / self.emo_gain_max, self.emo_gain / self.emo_gain_max)
@@ -798,7 +793,7 @@ class StreamSDK:
                                     self.seq_video_extractor.seek_to_frame(self.gen_frame_idx)
                                 else:
                                     if self.video_segment_auto_idle:
-                                        self.video_segment_current = "idle"  # тест анимация за анимацией
+                                        self.video_segment_current = self.idle_name  # тест анимация за анимацией
                                         logger.info(f"SWITCH TO IDLE CAUSE AUTO IDLE {self.video_segment_auto_idle}")
                                     self.gen_frame_idx = self.video_segment_info[self.video_segment_current]["start"]
                                     self.seq_video_extractor.seek_to_frame(self.gen_frame_idx)
