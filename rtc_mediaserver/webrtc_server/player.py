@@ -299,9 +299,9 @@ class WebRTCMediaPlayer:
         # Добавляем 25 видео кадров
         self._video_frames.extend(frames25)
 
-        get_logger(__name__).info(
-            f"Loaded synced batch: {len(self._audio_chunks)} audio chunks, {len(self._video_frames)} video frames"
-        )
+        # get_logger(__name__).info(
+        #     f"Loaded synced batch: {len(self._audio_chunks)} audio chunks, {len(self._video_frames)} video frames"
+        # )
 
         return True
 
@@ -340,11 +340,11 @@ class WebRTCMediaPlayer:
         # FIX проверка синхронизации буферов
         audio_count = len(self._audio_chunks)
         video_count = len(self._video_frames)
-        if audio_count == 0 and video_count > 10:
-            logger.warning("🚨 DESYNC: Video buffer has %d frames but audio buffer empty!", video_count)
-        elif video_count == 0 and audio_count > 20:
-            logger.warning("🚨 DESYNC: Audio buffer has %d chunks but video buffer empty!", audio_count)
-            
+        # if audio_count == 0 and video_count > 10:
+        #     logger.warning("🚨 DESYNC: Video buffer has %d frames but audio buffer empty!", video_count)
+        # elif video_count == 0 and audio_count > 20:
+        #     logger.warning("🚨 DESYNC: Audio buffer has %d chunks but video buffer empty!", audio_count)
+        #
         arr, frame_idx = self._video_frames.popleft()
         frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
         if self._loop:

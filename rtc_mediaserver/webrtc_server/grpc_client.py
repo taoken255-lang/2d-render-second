@@ -74,18 +74,19 @@ async def stream_worker_aio() -> None:
             while True:
                 interrupted = False
 
-                if INTERRUPT_CALLED.is_set():
-                    interrupted = True
-                    STATE.chunks_to_skip = len(pending_audio)
-                    INTERRUPT_CALLED.clear()
-                    USER_EVENTS.put_nowait({"type": "interrupted"})
+                if settings.fast_interrupts_enabled:
+                    if INTERRUPT_CALLED.is_set():
+                        interrupted = True
+                        STATE.chunks_to_skip = len(pending_audio)
+                        INTERRUPT_CALLED.clear()
+                        USER_EVENTS.put_nowait({"type": "interrupted"})
 
                 event = None
                 is_speech = True
                 is_interrupt = False
 
                 if AUDIO_SECOND_QUEUE.qsize() > 0:
-                    logger.info(f"AUDIO_SECOND_QUEUE.qsize={AUDIO_SECOND_QUEUE.qsize()}")
+                    #logger.info(f"AUDIO_SECOND_QUEUE.qsize={AUDIO_SECOND_QUEUE.qsize()}")
                     audio_sec, sr = AUDIO_SECOND_QUEUE.get_nowait()
 
                     if audio_sec is None and sr is None:
@@ -94,7 +95,7 @@ async def stream_worker_aio() -> None:
                             speech_sended = False
                             event = ServiceEvents.EOS if not interrupted else ServiceEvents.INTERRUPT
                         audio_sec, sr = np.zeros(CHUNK_SAMPLES, dtype=np.int16), AUDIO_SETTINGS.sample_rate
-                        logger.info("AUDIO_SECOND_QUEUE empty. Steady silence – idle state")
+                        #logger.info("AUDIO_SECOND_QUEUE empty. Steady silence – idle state")
                         is_speech = False
                     else:
                         n = audio_sec.shape[0]
@@ -106,13 +107,13 @@ async def stream_worker_aio() -> None:
 
                         speech_sended = True
                         is_speech = True
-                        logger.info(f"TMR Chunk got after {time.time() - STATE.tts_start}")
+                        #logger.info(f"TMR Chunk got after {time.time() - STATE.tts_start}")
                 else:
                     if speech_sended:
                         speech_sended = False
                         event = ServiceEvents.EOS if not interrupted else ServiceEvents.INTERRUPT
                     audio_sec, sr = np.zeros(CHUNK_SAMPLES, dtype=np.int16), AUDIO_SETTINGS.sample_rate
-                    logger.info("AUDIO_SECOND_QUEUE empty. Steady silence – idle state")
+                    #logger.info("AUDIO_SECOND_QUEUE empty. Steady silence – idle state")
                     is_speech = False
 
                 pending_audio.append((audio_sec, sr, event, is_speech, is_interrupt))
@@ -178,25 +179,32 @@ async def stream_worker_aio() -> None:
                     if pending_audio:
                         audio_chunk, _sr, event, is_speech, is_interrupt = pending_audio.popleft()
 
-                        if is_speech:
-                            logger.info(f"TMR Chunk rendered after {time.time() - STATE.tts_start}")
+                        #if is_speech:
+                            #logger.info(f"TMR Chunk rendered after {time.time() - STATE.tts_start}")
 
                         event_to_send = None
                         if event and event == ServiceEvents.EOS:
                             event_to_send = "eos"
                             #USER_EVENTS.put_nowait({"type": event_to_send})
 
+                        if not settings.fast_interrupts_enabled and event == ServiceEvents.INTERRUPT:
+                            USER_EVENTS.put_nowait({"type": "intrrupted"})
+
                         if is_interrupt:
                             event_to_send = "interrupted"
 
-                        if STATE.chunks_to_skip == 0:
-                            SYNC_QUEUE.put((audio_chunk, frames_batch.copy(), event_to_send))
+                        if settings.fast_interrupts_enabled:
+                            if STATE.chunks_to_skip == 0:
+                                SYNC_QUEUE.put((audio_chunk, frames_batch.copy(), event_to_send))
+                            else:
+                                STATE.chunks_to_skip -= 1
+                                #logger.info(f"Skipped chunk, remainig {STATE.chunks_to_skip}")
+                                if not STATE.chunks_to_skip and INTERRUPT_CALLED.is_set():
+                                    INTERRUPT_CALLED.clear()
                         else:
-                            STATE.chunks_to_skip -= 1
-                            logger.info(f"Skipped chunk, remainig {STATE.chunks_to_skip}")
-                            if not STATE.chunks_to_skip and INTERRUPT_CALLED.is_set():
-                                INTERRUPT_CALLED.clear()
-                        logger.info("SYNC_QUEUE +1 (size=%d)", SYNC_QUEUE.qsize())
+                            SYNC_QUEUE.put((audio_chunk, frames_batch.copy(), event_to_send))
+                            STATE.chunks_to_skip = 0
+                        #logger.info("SYNC_QUEUE +1 (size=%d)", SYNC_QUEUE.qsize())
                     else:
                         logger.warning("Render service produced %d frames but no matching audio is pending", FRAMES_PER_CHUNK)
                     frames_batch.clear()

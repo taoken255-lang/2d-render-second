@@ -4,29 +4,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import random
 import time
-import uuid
-
 from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-import wave
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, Depends, File, Form, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration  # type: ignore
 from aiortc.rtcrtpsender import RTCRtpSender  # type: ignore
-from pydantic import BaseModel, UUID4
-from pydantic import ValidationError as PDValidationError
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
 from rtc_mediaserver.logging_config import get_logger, setup_default_logging
-from rtc_mediaserver.offline_api.grpc_utils import local_video_run
-from rtc_mediaserver.webrtc_server.task_manager import TaskManager
 from .constants import CAN_SEND_FRAMES, RTC_STREAM_CONNECTED, WS_CONTROL_CONNECTED, USER_EVENTS, AVATAR_SET, INIT_DONE, \
     STATE, State
 from .grpc_client import stream_worker_forever
@@ -34,7 +26,6 @@ from .player import WebRTCMediaPlayer
 from .handlers import HANDLERS, ClientState
 from .info import info
 from .tts.elevenlabs import synthesize_worker, voices
-from .util import get_sample_rate_from_wav_bytes
 from .webrtc_manager import webrtc_manager
 from ..config import settings
 
@@ -43,9 +34,6 @@ setup_default_logging()
 logger = get_logger(__name__)
 
 app = FastAPI(title="Threaded WebRTC Server")
-
-task_manager = TaskManager(settings.offline_output_path / "task_status.json")
-
 
 # Exception handler for invalid JSON
 @app.exception_handler(JSONDecodeError)
@@ -491,143 +479,6 @@ async def control_ws(websocket: WebSocket):  # type: ignore[override]
         if not CAN_SEND_FRAMES.is_set():
             STATE.avatar = None
             AVATAR_SET.clear()
-
-
-# ───────────────────────── Offline render ───────────────────────────
-class RenderRequestData(BaseModel):
-    avatar: str
-
-
-class RenderResponseData(BaseModel):
-    job_id: UUID4
-
-
-class CommonResponse(BaseModel):
-    detail: str
-
-
-def from_form(avatar: str = Form(...)) -> RenderRequestData:
-    try:
-        logger.info(f"request json: {json}")
-        return RenderRequestData(avatar=avatar)
-    except PDValidationError as exc:
-        raise HTTPException(status_code=422, detail="Invalid request body")
-
-
-async def start_render_task(
-        audio: bytes,
-        sample_rate: int,
-        bps: int,
-        avatar_id: str,
-        output_path: Path,
-        request_id: UUID4
-):
-    try:
-        await local_video_run(
-                audio=audio,
-                sample_rate=sample_rate,
-                bps=bps,
-                avatar_id=avatar_id,
-                output_path=output_path
-            )
-        await task_manager.set_status(task_id=str(request_id), status="done")
-    except Exception as exc:
-        logger.error(exc)
-        await task_manager.set_status(task_id=str(request_id), status="error")
-
-
-@app.post("/render")
-async def render(
-        request: Request,
-        response: Response,
-        background_tasks: BackgroundTasks,
-        data: RenderRequestData = Depends(from_form),
-        audio: UploadFile = File(None)
-):
-    if task_manager.is_locked():
-        return {
-          "error": "UNKNOWN_ERROR",
-          "description": "Unknown error occured."
-        }
-    try:
-        if audio is None:
-            response.status_code = 400
-            response_model = CommonResponse(detail="Empty audio")
-        else:
-            _, audio_ext = os.path.splitext(audio.filename)
-            request_audio = await audio.read()
-            sample_rate = get_sample_rate_from_wav_bytes(request_audio)
-            logger.info(f"Audio size: {len(request_audio)}")
-            request_id = uuid.uuid4()
-
-            if not settings.offline_output_path.exists():
-                settings.offline_output_path.mkdir(exist_ok=True, parents=True)
-
-            output_path = settings.offline_output_path / str(request_id)
-            await task_manager.set_status(task_id=str(request_id), status="processing")
-
-            t = asyncio.create_task(start_render_task(
-                audio=request_audio,
-                sample_rate=sample_rate,
-                bps=16,
-                avatar_id=data.avatar,
-                output_path=output_path,
-                request_id=request_id
-            ))
-            task_manager.set_task(t, job_id=str(request_id))
-
-            response.status_code = 200
-            response_model = RenderResponseData(job_id=request_id)
-    except Exception as exc:
-        logger.error(exc)
-        response.status_code = 500
-        response_model = CommonResponse(detail="Server Internal Error")
-    return response_model
-
-
-@app.get("/render/status/{job_id}")
-async def status(job_id: str):
-    task_status = task_manager.get(task_id=job_id)
-    if task_status is None:
-        return {
-            "status": "error",
-            "error": "Task not found"
-        }
-    return task_status
-
-
-@app.get("/render/result/{task_id}")
-async def get_result(task_id: str):
-    """
-    Возвращает итоговое видео по task_id.
-    """
-    task = task_manager.get(task_id)
-    if not task:
-        raise HTTPException(status_code=400, detail="Task not found")
-
-    if task.get("status") != "done":
-        raise HTTPException(status_code=400, detail=f"Task not finished: {task.get('status')}")
-
-    result_path = settings.offline_output_path / task_id / "video.mp4"
-    if not result_path or not Path(result_path).exists():
-        raise HTTPException(status_code=400, detail="Result file not found")
-
-    return FileResponse(
-        result_path,
-        media_type="video/mp4",
-        filename=f"{task_id}.mp4"
-    )
-
-@app.delete("/render/{job_id}")
-async def abort_render(job_id: str):
-    logger.info(f"Request to abort task {job_id}")
-    task_manager.cancel_task(job_id)
-
-
-@app.get("/avatars")
-async def get_avatars():
-    avatars = info()
-    return {"avatars": list(avatars.keys())}
 
 
 @app.on_event("shutdown")

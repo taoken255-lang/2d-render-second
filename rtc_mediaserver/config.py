@@ -1,7 +1,6 @@
 """Configuration settings for RTC Media Server."""
 
 import os
-from pathlib import Path
 from typing import Optional
 
 from pydantic_settings import BaseSettings
@@ -57,7 +56,7 @@ class Settings(BaseSettings):
 
     bitrate: int = 16_000_000
 
-    offline_output_path: Path = Path("offline_data")
+    fast_interrupts_enabled: bool = False
 
 # Global settings instance
 settings = Settings() 
