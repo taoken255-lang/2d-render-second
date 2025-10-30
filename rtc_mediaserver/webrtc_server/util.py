@@ -1,7 +1,5 @@
 import asyncio
-import io
 import time
-import wave
 
 import numpy as np
 
@@ -27,26 +25,3 @@ async def _flush_pcm_buf(state: ClientState, t1 = None) -> None:
             logger.info(f"TMR 11labs chunk time =  {time.time() - STATE.tts_start}")
         await asyncio.sleep(0)
         logger.info("Queued X-second audio chunk (%d samples)", arr.shape[0])
-
-
-def get_sample_rate_from_wav_bytes(wav_bytes):
-    """
-    Extracts the sample rate from WAV file bytes.
-
-    Args:
-        wav_bytes (bytes): The raw bytes of a WAV file.
-
-    Returns:
-        int: The sample rate of the WAV file.
-    """
-    try:
-        # Create a file-like object from the bytes
-        wav_file_object = io.BytesIO(wav_bytes)
-
-        # Open the WAV file from the file-like object
-        with wave.open(wav_file_object, 'rb') as wf:
-            sample_rate = wf.getframerate()
-            return sample_rate
-    except wave.Error as e:
-        print(f"Error reading WAV data: {e}")
-        return None

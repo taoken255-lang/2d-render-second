@@ -82,6 +82,6 @@ def get_logger(name: str) -> logging.Logger:
 def setup_default_logging() -> None:
     """Setup default logging configuration."""
     setup_logging(
-        level="DEBUG",
+        level="ERROR",
         format_string='%(asctime)s - %(threadName)s - %(levelname)s - %(filename)s:%(funcName)s:%(lineno)d - %(message)s'
-    ) 
+    )

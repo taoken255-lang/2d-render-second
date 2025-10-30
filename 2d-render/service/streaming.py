@@ -176,7 +176,8 @@ def stream_frames_thread(render, video_queue, height, width, start_time, request
 			if first_frame_time is None:
 				first_frame_time = time.perf_counter()
 			realtime_metric = (time.perf_counter() - first_frame_time) - frame_idx * every_frame_time
-			logger.info(f"Frame ready from NN {frame_idx}, realtime_metric: {realtime_metric}, {time.perf_counter() - realtime_metric} {width}x{height}, {len(frame)}")
+			if frame_idx % 25 == 0:
+				logger.info(f"Frame ready from NN {frame_idx}, realtime_metric: {realtime_metric}, {time.perf_counter() - realtime_metric} {width}x{height}, {len(frame)}")
 			video_queue.put(ImageObject(data=frame, height=height, width=width))
 			frame_idx += 1
 		# dt_start_time = dt_cur_time
@@ -573,7 +574,8 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 					logger.debug(f"CLIENT: {active_client}")
 					if not active_client:
 						raise RpcError
-					logger.info(f"SEND {frame_idx}")
+					if frame_idx % 25 == 0:
+						logger.info(f"SEND {frame_idx}")
 					if avatar_sent_mem:
 						yield RenderResponse(
 							avatar_set=AvatarSet(avatar_id=avatar_sent_mem.event_data["avatar_id"]))
@@ -584,7 +586,8 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 					if first_frame_time is None:
 						first_frame_time = time.perf_counter()
 					realtime_metric = (time.perf_counter() - first_frame_time) - frame_idx * every_frame_time
-					logger.info(f"SENT {frame_idx}, realtime_metric: {realtime_metric}")
+					if frame_idx % 25 == 0:
+						logger.info(f"SENT {frame_idx}, realtime_metric: {realtime_metric}")
 					
 					frame_idx += 1
 				# logger.info(f"END GRPC YIELDING {chunk_counter}")
