@@ -74,9 +74,9 @@ async def stream_worker_aio() -> None:
             while True:
                 interrupted = False
 
-                if settings.fast_interrupts_enabled:
-                    if INTERRUPT_CALLED.is_set():
-                        interrupted = True
+                if INTERRUPT_CALLED.is_set():
+                    interrupted = True
+                    if settings.fast_interrupts_enabled:
                         STATE.chunks_to_skip = len(pending_audio)
                         INTERRUPT_CALLED.clear()
                         USER_EVENTS.put_nowait({"type": "interrupted"})
@@ -92,8 +92,10 @@ async def stream_worker_aio() -> None:
                     if audio_sec is None and sr is None:
                         logger.info(f"Got EOS marker - gen silence")
                         if speech_sended:
+
                             speech_sended = False
                             event = ServiceEvents.EOS if not interrupted else ServiceEvents.INTERRUPT
+                            logger.info(f"EVENT push from 1 {event}")
                         audio_sec, sr = np.zeros(CHUNK_SAMPLES, dtype=np.int16), AUDIO_SETTINGS.sample_rate
                         #logger.info("AUDIO_SECOND_QUEUE empty. Steady silence – idle state")
                         is_speech = False
@@ -112,6 +114,7 @@ async def stream_worker_aio() -> None:
                     if speech_sended:
                         speech_sended = False
                         event = ServiceEvents.EOS if not interrupted else ServiceEvents.INTERRUPT
+                        logger.info(f"EVENT push from 2 {event}")
                     audio_sec, sr = np.zeros(CHUNK_SAMPLES, dtype=np.int16), AUDIO_SETTINGS.sample_rate
                     #logger.info("AUDIO_SECOND_QUEUE empty. Steady silence – idle state")
                     is_speech = False
@@ -185,37 +188,27 @@ async def stream_worker_aio() -> None:
                         event_to_send = None
                         if event and event == ServiceEvents.EOS:
                             event_to_send = "eos"
-                            #USER_EVENTS.put_nowait({"type": event_to_send})
 
-                        if not settings.fast_interrupts_enabled and event == ServiceEvents.INTERRUPT:
-                            USER_EVENTS.put_nowait({"type": "intrrupted"})
+                        if not settings.fast_interrupts_enabled and event and event == ServiceEvents.INTERRUPT:
+                            USER_EVENTS.put_nowait({"type": "interrupted"})
+                            INTERRUPT_CALLED.clear()
+                            event_to_send = None
+                            logger.info(f"EVENT Interrupted, event_to_send = None")
 
-                        if is_interrupt:
+                        if settings.fast_interrupts_enabled and STATE.chunks_to_skip > 0:
+                            STATE.chunks_to_skip =- 1
                             event_to_send = "interrupted"
+                            if not STATE.chunks_to_skip and INTERRUPT_CALLED.is_set():
+                                INTERRUPT_CALLED.clear()
 
-                        if settings.fast_interrupts_enabled:
-                            if STATE.chunks_to_skip == 0:
-                                SYNC_QUEUE.put((audio_chunk, frames_batch.copy(), event_to_send))
-                            else:
-                                STATE.chunks_to_skip -= 1
-                                #logger.info(f"Skipped chunk, remainig {STATE.chunks_to_skip}")
-                                if not STATE.chunks_to_skip and INTERRUPT_CALLED.is_set():
-                                    INTERRUPT_CALLED.clear()
-                        else:
-                            SYNC_QUEUE.put((audio_chunk, frames_batch.copy(), event_to_send))
-                            STATE.chunks_to_skip = 0
+                        logger.info(f"EVENT {event_to_send}")
+                        SYNC_QUEUE.put((audio_chunk, frames_batch.copy(), event_to_send))
+
                         #logger.info("SYNC_QUEUE +1 (size=%d)", SYNC_QUEUE.qsize())
                     else:
                         logger.warning("Render service produced %d frames but no matching audio is pending", FRAMES_PER_CHUNK)
                     frames_batch.clear()
 
-                    # t_sleep = (0.50 - (time.time() - t_start))
-                    #
-                    # logger.info(f"grpc sleep = {t_sleep}")
-                    #
-                    # if t_sleep > 0:
-                    #     logger.info(f"Sleep for {t_sleep}")
-                    #     await asyncio.sleep(t_sleep)
                     t_start = time.time()
 
                     await asyncio.sleep(0)
