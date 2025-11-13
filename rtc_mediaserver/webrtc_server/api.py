@@ -549,7 +549,7 @@ async def render(
           "error": "UNKNOWN_ERROR",
           "description": "Unknown error occured."
         })
-    if data.avatar not in ["ermakova_grey", "vedenina"]:
+    if data.avatar not in ["iirina"]:
         return JSONResponse(status_code=400, content={
             "error": "UNKNOWN_ERROR",
             "description": "Unknown error occured."
