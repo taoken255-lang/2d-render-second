@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import threading
 import time
 from collections import deque
@@ -54,6 +55,7 @@ class PlayerStreamTrack(MediaStreamTrack):
         self._pts: int = 0
         self._start: Optional[float] = None  # in perf_counter timebase (not wallclock)  # FIX ясная семантика базы
         self._t0 = time.time()
+        self.lags = 3
 
     async def _sleep_until_slot(self) -> None:
         """Sleep just enough to achieve a constant frame/packet rate."""
@@ -88,7 +90,7 @@ class PlayerStreamTrack(MediaStreamTrack):
     async def recv(self):  # type: ignore[override]
         import time
         recv_start = time.perf_counter()
-        
+
         # Диагностика частоты recv()
         self._recv_count += 1
         if self._last_recv_time > 0:
@@ -293,15 +295,17 @@ class WebRTCMediaPlayer:
         # FIX КРИТИЧНО: правильное разбиение на чанки!
         # Нарезаем 1 сек аудио на 50 чанков по 20мс
         for i in range(0, len(audio_sec), AUDIO_SETTINGS.audio_samples):
-            self._audio_chunks.append([audio_sec[i:i + AUDIO_SETTINGS.audio_samples], None])
+            self._audio_chunks.append([audio_sec[i:i + AUDIO_SETTINGS.audio_samples], evt_to_send if evt_to_send == "interrupted" else None])
         self._audio_chunks[-1][1] = evt_to_send
 
         # Добавляем 25 видео кадров
-        self._video_frames.extend(frames25)
+        for i in frames25:
+            frame, idx = i
+            self._video_frames.append((frame, idx, evt_to_send if evt_to_send == "interrupted" else None))
 
-        # get_logger(__name__).info(
-        #     f"Loaded synced batch: {len(self._audio_chunks)} audio chunks, {len(self._video_frames)} video frames"
-        # )
+        get_logger(__name__).info(
+            f"Loaded synced batch: {len(self._audio_chunks)} audio chunks, {len(self._video_frames)} video frames"
+        )
 
         return True
 
@@ -313,6 +317,8 @@ class WebRTCMediaPlayer:
             return False
 
         chunk, event = self._audio_chunks.popleft()
+        if event == "interrupted":
+            return True
         frame = av.AudioFrame(format="s16", layout="mono", samples=AUDIO_SETTINGS.audio_samples)
         frame.planes[0].update(chunk.tobytes())
         frame.sample_rate = AUDIO_SETTINGS.sample_rate
@@ -340,12 +346,14 @@ class WebRTCMediaPlayer:
         # FIX проверка синхронизации буферов
         audio_count = len(self._audio_chunks)
         video_count = len(self._video_frames)
-        # if audio_count == 0 and video_count > 10:
-        #     logger.warning("🚨 DESYNC: Video buffer has %d frames but audio buffer empty!", video_count)
-        # elif video_count == 0 and audio_count > 20:
-        #     logger.warning("🚨 DESYNC: Audio buffer has %d chunks but video buffer empty!", audio_count)
-        #
-        arr, frame_idx = self._video_frames.popleft()
+        if audio_count == 0 and video_count > 10:
+            logger.warning("🚨 DESYNC: Video buffer has %d frames but audio buffer empty!", video_count)
+        elif video_count == 0 and audio_count > 20:
+            logger.warning("🚨 DESYNC: Audio buffer has %d chunks but video buffer empty!", audio_count)
+
+        arr, frame_idx, evt = self._video_frames.popleft()
+        if evt == "interrupted":
+            return True
         frame = av.VideoFrame.from_ndarray(arr, format="rgb24")
         if self._loop:
             try:
