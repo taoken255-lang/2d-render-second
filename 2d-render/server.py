@@ -4,8 +4,10 @@ from config import Config
 from loguru import logger
 import multiprocessing
 import threading
+import torch
 import grpc
 import sys
+import os
 
 from service.streaming import StreamingService
 from service.offline_alpha import OfflineAlphaService
@@ -70,5 +72,11 @@ def serve() -> None:
 
 
 if __name__ == '__main__':
+	if torch.cuda.is_available():
+		logger.info(f"CUDA is available: {torch.cuda.get_device_name(0)}")
+	else:
+		logger.exception(f"CUDA is not available")
+		os._exit(1)
+
 	multiprocessing.set_start_method("spawn")
 	serve()

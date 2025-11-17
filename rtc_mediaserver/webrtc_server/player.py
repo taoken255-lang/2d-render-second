@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import threading
 import time
 from collections import deque
@@ -54,6 +55,7 @@ class PlayerStreamTrack(MediaStreamTrack):
         self._pts: int = 0
         self._start: Optional[float] = None  # in perf_counter timebase (not wallclock)  # FIX ясная семантика базы
         self._t0 = time.time()
+        self.lags = 3
 
     async def _sleep_until_slot(self) -> None:
         """Sleep just enough to achieve a constant frame/packet rate."""
@@ -88,7 +90,7 @@ class PlayerStreamTrack(MediaStreamTrack):
     async def recv(self):  # type: ignore[override]
         import time
         recv_start = time.perf_counter()
-        
+
         # Диагностика частоты recv()
         self._recv_count += 1
         if self._last_recv_time > 0:

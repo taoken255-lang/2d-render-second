@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     bitrate: int = 16_000_000
 
     offline_output_path: Path = Path("offline_data")
+    offline_results_to_keep: int = 10
 
     fast_interrupts_enabled: bool = False
 

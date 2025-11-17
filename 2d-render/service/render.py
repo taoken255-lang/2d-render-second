@@ -1,10 +1,12 @@
 from multiprocessing import Queue
 from loguru import logger
 import numpy as np
-import io
 import librosa
+import torch
 import wave
 import time
+import io
+import os
 
 from ditto.stream_pipeline_online import StreamSDK as onlineSDK
 
@@ -15,6 +17,11 @@ from config import Config
 class RenderService:
 	def __init__(self, video_queue: Queue, is_online: bool = False, sampling_timestamps: int = 0):
 		try:
+			if torch.cuda.is_available():
+				logger.info(f"CUDA is available: {torch.cuda.get_device_name(0)}")
+			else:
+				logger.exception(f"CUDA is not available")
+				raise Exception()
 			self.is_online = is_online
 			self.sampling_timestamps = sampling_timestamps
 			cfg_pkl = f"{Config.WEIGHTS_PATH}/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl"

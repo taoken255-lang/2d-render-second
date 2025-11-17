@@ -12,6 +12,7 @@ from PIL import Image
 from rtc_mediaserver.config import settings
 from rtc_mediaserver.logging_config import get_logger, setup_default_logging
 from rtc_mediaserver.proto import render_service_pb2_grpc, render_service_pb2
+from rtc_mediaserver.webrtc_server.tools import cleanup_old_results
 
 setup_default_logging()
 logger = get_logger(__name__)
@@ -164,6 +165,8 @@ async def local_video_run(audio: bytes, sample_rate: int, bps: int, avatar_id: s
     await combine_with_ffmpeg(frames_dir=frames_path, audio_path=audio_path, output_path=video_path, fps=25)
     shutil.rmtree(frames_path)
     logger.info(f"Frames in path {frames_path} are deleted")
+    cleanup_old_results()
+    logger.info(f"Old results cleared")
 
 
 async def run():
@@ -185,9 +188,3 @@ async def run():
 
 if __name__ == '__main__':
     asyncio.get_event_loop().run_until_complete(run())
-
-
-
-
-
-
