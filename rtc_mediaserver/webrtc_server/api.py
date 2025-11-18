@@ -549,7 +549,7 @@ async def render(
           "error": "UNKNOWN_ERROR",
           "description": "Unknown error occured."
         })
-    if data.avatar not in ["iirina"]:
+    if data.avatar not in settings.offline_avatars:
         return JSONResponse(status_code=400, content={
             "error": "UNKNOWN_ERROR",
             "description": "Unknown error occured."
