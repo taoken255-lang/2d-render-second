@@ -506,9 +506,8 @@ class CommonResponse(BaseModel):
     detail: str
 
 
-def from_form(avatar: str = Form(...)) -> RenderRequestData:
+def from_form(avatar: str = Form("iirina")) -> RenderRequestData:
     try:
-        logger.info(f"request json: {json}")
         return RenderRequestData(avatar=avatar)
     except PDValidationError as exc:
         raise HTTPException(status_code=422, detail="Invalid request body")
@@ -550,10 +549,7 @@ async def render(
           "description": "Unknown error occured."
         })
     if data.avatar not in settings.offline_avatars:
-        return JSONResponse(status_code=400, content={
-            "error": "UNKNOWN_ERROR",
-            "description": "Unknown error occured."
-        })
+        data.avatar = "iirina"
     try:
         if audio is None:
             response.status_code = 400
