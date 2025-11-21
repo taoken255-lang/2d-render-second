@@ -2,8 +2,9 @@
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -59,6 +60,7 @@ class Settings(BaseSettings):
 
     offline_output_path: Path = Path("offline_data")
     offline_results_to_keep: int = 10
+    offline_avatars: List[str] = ["iirina"]
 
     fast_interrupts_enabled: bool = False
 
