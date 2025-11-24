@@ -4,6 +4,14 @@ ENV C_FORCE_ROOT 1
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 
+# Redirect HuggingFace cache to /tmp to avoid /.cache permission issues
+ENV HF_HOME=/tmp/huggingface
+ENV HF_MODULES_CACHE=/tmp/huggingface/modules
+ENV TRANSFORMERS_CACHE=/tmp/huggingface/transformers
+
+# Disable uv cache to avoid /.cache directory creation
+ENV UV_NO_CACHE=1
+
 # --------------------------------------------------------------------------------------------
 
 RUN ln -sf /usr/share/zoneinfo/Europe/Moscow /etc/localtime
@@ -32,7 +40,7 @@ RUN pip install uv
 
 COPY ./2d-render/pyproject.toml ./
 
-RUN uv pip install --system .
+RUN uv pip install --system --no-cache .
 
 COPY 2d-render/ ./
 
@@ -45,7 +53,7 @@ RUN cd /app/ditto/core/utils/blend && \
 WORKDIR /rtc_mediaserver
 COPY ./pyproject.toml simple_webrtc_server.py image.png ./run.sh /rtc_mediaserver/
 COPY ./rtc_mediaserver/ ./run.sh /rtc_mediaserver/rtc_mediaserver/
-RUN uv sync --no-cache-dir
+RUN uv sync --no-cache
 
 # ---------- copy runtime files ----------
 #COPY simple_webrtc_server.py img2.png /rtc_app/
