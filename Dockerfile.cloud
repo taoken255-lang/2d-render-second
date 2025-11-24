@@ -3,6 +3,8 @@ FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
 ENV C_FORCE_ROOT 1
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
+# Disable uv cache to avoid /.cache directory creation
+ENV UV_NO_CACHE=1
 
 # Redirect HuggingFace cache to /tmp to avoid /.cache permission issues
 ENV HF_HOME=/tmp/huggingface
