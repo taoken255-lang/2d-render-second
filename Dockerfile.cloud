@@ -10,6 +10,9 @@ ENV UV_HTTP_TIMEOUT=600
 ENV HF_HOME=/tmp/huggingface
 ENV HF_MODULES_CACHE=/tmp/huggingface/modules
 ENV TRANSFORMERS_CACHE=/tmp/huggingface/transformers
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+# Redirect Numba cache to /tmp (used by librosa)
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 
 # Disable uv cache to avoid /.cache directory creation
 ENV UV_NO_CACHE=1
