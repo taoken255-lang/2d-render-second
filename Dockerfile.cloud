@@ -36,6 +36,11 @@ RUN uv pip install --system .
 
 COPY 2d-render/ ./
 
+# Pre-compile Cython modules to avoid runtime compilation and /.pyxbld directory
+RUN cd /app/ditto/core/utils/blend && \
+    python3 setup.py build_ext --inplace && \
+    rm -rf build/ *.c blend.cpp 2>/dev/null || true
+
 # --- WebRTC Service ---
 WORKDIR /rtc_mediaserver
 COPY ./pyproject.toml simple_webrtc_server.py image.png ./run.sh /rtc_mediaserver/

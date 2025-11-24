@@ -5,6 +5,12 @@ __pycache__/
 
 # C extensions
 *.so
+*.pyd
+
+# Cython build artifacts
+.pyxbld/
+# Note: blend.c is generated from blend.pyx during build
+# We don't ignore all .c files because blend_impl.c is a source file
 
 # Distribution / packaging
 .Python
