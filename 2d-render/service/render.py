@@ -6,9 +6,8 @@ import torch
 import wave
 import time
 import io
-import os
 
-from ditto.stream_pipeline_online import StreamSDK as onlineSDK
+from agnet.stream_pipeline_online import StreamSDK as onlineSDK
 
 from service.object_models import RenderAnimationObject, RenderEmotionObject, ErrorObject, ErrorDataType
 from config import Config
@@ -24,8 +23,8 @@ class RenderService:
 				raise Exception()
 			self.is_online = is_online
 			self.sampling_timestamps = sampling_timestamps
-			cfg_pkl = f"{Config.WEIGHTS_PATH}/checkpoints/ditto_cfg/v0.4_hubert_cfg_trt_online.pkl"
-			data_root = Config.DITTO_DATA_ROOT
+			cfg_pkl = f"{Config.WEIGHTS_PATH}/checkpoints/agnet_cfg/v0.4_hubert_cfg_trt_online.pkl"
+			data_root = Config.AGNET_DATA_ROOT
 
 			if is_online:
 				self.sdk = onlineSDK(cfg_pkl, data_root)
@@ -89,7 +88,7 @@ class RenderService:
 	        avatar_name: str,
 	        version_name: str,
 	        emotions: bool,
-	        ditto_config: dict,
+	        agnet_config: dict,
 	        video_queue: Queue,
 	        idle_name: str = "idle"
 	):
@@ -109,8 +108,8 @@ class RenderService:
 			        "A2M_MAX_SIZE": int(Config.A2M_MAX_SIZE),
 			        "idle_name": idle_name,
 			        "version_name": version_name}
-			logger.info(ditto_config)
-			args.update(ditto_config)
+			logger.info(agnet_config)
+			args.update(agnet_config)
 			if sts == 5:
 				args["sampling_timesteps"] = 5
 

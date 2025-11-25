@@ -50,7 +50,7 @@ RUN uv pip install --system --no-cache .
 COPY 2d-render/ ./
 
 # Pre-compile Cython modules to avoid runtime compilation and /.pyxbld directory
-RUN cd /app/ditto/core/utils/blend && \
+RUN cd /app/agnet/core/utils/blend && \
     python3 setup.py build_ext --inplace && \
     rm -rf build/ *.c blend.cpp 2>/dev/null || true
 

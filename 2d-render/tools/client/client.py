@@ -187,10 +187,10 @@ if __name__ == '__main__':
 	url = "2d-dev.digitalavatars.ru"
 	aud_file = "tools/client/res/ved_00.wav"
 	img_file = "tools/client/res/gomer.png"
-	avatar_id = "vedenina2"
+	avatar_id = "visper_sofia"
 	port = "8503"
 	# info(url)
-	# local_video_run(aud_file, avatar_id, port)
+	local_video_run(aud_file, avatar_id, port)
 	# video_run(aud_file, avatar_id, url)
-	local_image_run(aud_file, img_file, port)
+	# local_image_run(aud_file, img_file, port)
 	# image_run(aud_file, img_file, url)

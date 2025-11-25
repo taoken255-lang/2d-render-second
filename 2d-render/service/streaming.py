@@ -167,7 +167,6 @@ def stream_frames_thread(render, video_queue, height, width, start_time, request
 			# 		dt_min_time = dt_chunk_time
 			# 	dt_full_time += dt_chunk_time
 			# 	dt_chunk_counter += 1
-			# 	logger.info(f"DITTO CHUNK TIME: {dt_chunk_time}")
 			# start_time.value = render.start_time
 			if isinstance(frame, EventObject):
 				video_queue.put(frame)
@@ -193,10 +192,6 @@ def stream_frames_thread(render, video_queue, height, width, start_time, request
 		# 	bad_chunks += 1
 		# 	gb_info += "0"
 		video_queue.put(ImageObject(data=None, height=height, width=width))
-	# logger.info(f"MIN DITTO OUTPUT CHUNK TIME: {dt_min_time}")
-	# logger.info(f"MAX DITTO OUTPUT CHUNK TIME: {dt_max_time}")
-	# logger.info(f"AVG DITTO OUTPUT CHUNK TIME: {dt_full_time / dt_chunk_counter}")
-	# logger.info(f"FULL DITTO OUTPUT TIME: {dt_full_time}")
 	# logger.info(f"CHUNKS REALTIME INFO (g:b): {good_chunks}:{bad_chunks}")
 	# logger.info(f"CHUNKS REALTIME INFO (g:b): {gb_info}")
 	# logger.info(time_chunks_list)
@@ -262,11 +257,11 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 					img_width = int(size[0])
 					img_height = int(size[1])
 
-					if os.path.exists(f"{base_path}/ditto.json"):
-						with open(f"{base_path}/ditto.json", "r", encoding="utf-8") as f:
-							ditto_config = json.load(f)
+					if os.path.exists(f"{base_path}/config.json"):
+						with open(f"{base_path}/config.json", "r", encoding="utf-8") as f:
+							agnet_config = json.load(f)
 					else:
-						ditto_config = {}
+						agnet_config = {}
 
 					emotions_exist = os.path.exists(f"{base_path}/emotions/")
 					render.handle_video(
@@ -274,7 +269,7 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 						avatar_name=avatar_name,
 						version_name=last_version,
 						emotions=emotions_exist,
-						ditto_config=ditto_config,
+						agnet_config=agnet_config,
 						video_queue=video_queue,
 						idle_name=idle_name
 					)
@@ -399,9 +394,9 @@ def get_mqueue_thread(from_queue, to_queue, is_alpha, output_format, alpha_servi
 					to_queue.put(frame)
 					continue
 				# logger.info("FRAMEOBJECT")
-				logger.debug("CHUNK DITTO -> LAST")
+				logger.debug("CHUNK MID -> LAST")
 				if frame.data is None:
-					logger.debug("CHUNK DITTO IS NONE - BREAK")
+					logger.debug("CHUNK MID IS NONE - BREAK")
 					break
 
 				rgb = np.frombuffer(frame.data.tobytes(), dtype=np.uint8).reshape(frame.width, frame.height, 3)
