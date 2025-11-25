@@ -1,0 +1,101 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Базовые пакеты
+RUN apt-get update && apt-get install -y \
+    wget gnupg2 ca-certificates build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Подключаем репо CUDA и ставим CUDA Toolkit 12.8.x
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && rm cuda-keyring_1.1-1_all.deb \
+    && wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-ubuntu2204.pin \
+    && mv cuda-ubuntu2204.pin /etc/apt/preferences.d/cuda-repository-pin-600 \
+    && apt-get update \
+    && apt-get install -y cuda-toolkit-12-8 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ставим cuDNN 8.9.7 для CUDA 12 из tar.xz
+RUN wget https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/linux-x86_64/cudnn-linux-x86_64-8.9.7.29_cuda12-archive.tar.xz \
+    && tar -xvf cudnn-linux-x86_64-8.9.7.29_cuda12-archive.tar.xz \
+    && cp -P cudnn-linux-x86_64-8.9.7.29_cuda12-archive/include/* /usr/local/cuda/include/ \
+    && cp -P cudnn-linux-x86_64-8.9.7.29_cuda12-archive/lib/* /usr/local/cuda/lib64/ \
+    && rm -rf cudnn-linux-x86_64-8.9.7.29_cuda12-archive* \
+    && echo "/usr/local/cuda/lib64" > /etc/ld.so.conf.d/cuda.conf \
+    && ldconfig
+
+# PATH и LD_LIBRARY_PATH
+ENV PATH=/usr/local/cuda/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+
+# Опционально: проверка
+RUN nvcc --version && ls -l /usr/local/cuda/lib64/libcudnn*
+
+ENV C_FORCE_ROOT 1
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
+# Disable uv cache to avoid /.cache directory creation
+ENV UV_NO_CACHE=1
+ENV UV_HTTP_TIMEOUT=600
+# Redirect HuggingFace cache to /tmp to avoid /.cache permission issues
+ENV HF_HOME=/tmp/huggingface
+ENV HF_MODULES_CACHE=/tmp/huggingface/modules
+ENV TRANSFORMERS_CACHE=/tmp/huggingface/transformers
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+# Redirect Numba cache to /tmp (used by librosa)
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+
+# Disable uv cache to avoid /.cache directory creation
+ENV UV_NO_CACHE=1
+
+# --------------------------------------------------------------------------------------------
+RUN ln -sf /usr/share/zoneinfo/Europe/Moscow /etc/localtime
+RUN apt update && apt install -y --no-install-recommends make git ca-certificates \
+    build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
+    wget curl llvm libncurses5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev \
+    libffi-dev liblzma-dev python3-pip ffmpeg libsm6 libxext6 python3-setuptools \
+    python3-dev libpng-dev pngquant
+RUN apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --------------------------------------------------------------------------------------------
+
+RUN python3 -m pip install --upgrade pip
+RUN pip3 install --upgrade pip setuptools wheel cmake
+
+# --------------------------------------------------------------------------------------------
+RUN pip install nvidia-cublas-cu12==12.9.1.4
+RUN pip install tensorrt==8.6.1.post1
+
+WORKDIR /app
+#COPY weights/ /app/weights/
+RUN apt-get update && apt-get install
+
+RUN pip install uv
+
+COPY ./2d-render/pyproject.toml ./
+
+RUN uv pip install --system --no-cache .
+
+COPY 2d-render/ ./
+
+# Pre-compile Cython modules to avoid runtime compilation and /.pyxbld directory
+RUN cd /app/agnet/core/utils/blend && \
+    python3 setup.py build_ext --inplace && \
+    rm -rf build/ *.c blend.cpp 2>/dev/null || true
+
+# --- WebRTC Service ---
+WORKDIR /rtc_mediaserver
+COPY ./pyproject.toml simple_webrtc_server.py image.png ./run.sh /rtc_mediaserver/
+COPY ./rtc_mediaserver/ ./run.sh /rtc_mediaserver/rtc_mediaserver/
+RUN uv sync --no-cache
+
+# ---------- copy runtime files ----------
+#COPY simple_webrtc_server.py img2.png /rtc_app/
+#COPY rtc_mediaserver/ /rtc_app/rtc_mediaserver/
+#COPY ./run.sh /rtc_app/run.sh
+RUN sed -i -e 's/\r$//' run.sh && chmod +x run.sh
+
+EXPOSE 8080
+CMD ["/rtc_mediaserver/run.sh"]

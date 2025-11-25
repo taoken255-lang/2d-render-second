@@ -34,7 +34,7 @@ from .player import WebRTCMediaPlayer
 from .handlers import HANDLERS, ClientState
 from .info import info
 from .tts.elevenlabs import synthesize_worker, voices
-from .util import get_sample_rate_from_wav_bytes
+from .util import get_sample_rate_from_wav_bytes, wav_to_mono_and_sample_rate
 from .webrtc_manager import webrtc_manager
 from ..config import settings
 
@@ -495,7 +495,7 @@ async def control_ws(websocket: WebSocket):  # type: ignore[override]
 
 # ───────────────────────── Offline render ───────────────────────────
 class RenderRequestData(BaseModel):
-    avatar: str
+    avatar: str = "iirina"
 
 
 class RenderResponseData(BaseModel):
@@ -504,14 +504,6 @@ class RenderResponseData(BaseModel):
 
 class CommonResponse(BaseModel):
     detail: str
-
-
-def from_form(avatar: str = Form("iirina")) -> RenderRequestData:
-    try:
-        return RenderRequestData(avatar=avatar)
-    except PDValidationError as exc:
-        raise HTTPException(status_code=422, detail="Invalid request body")
-
 
 async def start_render_task(
         audio: bytes,
@@ -540,25 +532,32 @@ async def render(
         request: Request,
         response: Response,
         background_tasks: BackgroundTasks,
-        data: RenderRequestData = Depends(from_form),
+        data: RenderRequestData = RenderRequestData(),
         audio: UploadFile = File(None)
 ):
     if task_manager.is_locked():
         return JSONResponse(status_code=400, content={
-          "error": "UNKNOWN_ERROR",
-          "description": "Unknown error occured."
+          "error": "SERVER_BUSY",
+          "description": "Server is busy."
         })
     if data.avatar not in settings.offline_avatars:
         data.avatar = "iirina"
     try:
         if audio is None:
-            response.status_code = 400
-            response_model = CommonResponse(detail="Empty audio")
+            return JSONResponse(status_code=400, content={
+              "error": "WRONG_INPUT",
+              "description": "Wrong input."
+            })
         else:
             _, audio_ext = os.path.splitext(audio.filename)
             request_audio = await audio.read()
-            sample_rate = get_sample_rate_from_wav_bytes(request_audio)
-            logger.info(f"Audio size: {len(request_audio)}")
+            sample_rate, mono_audio = wav_to_mono_and_sample_rate(request_audio)
+            if not sample_rate or not mono_audio:
+                return JSONResponse(status_code=400, content={
+                    "error": "WRONG_INPUT",
+                    "description": "Wrong input."
+                })
+            logger.info(f"Audio size: {len(request_audio)}, SR: {sample_rate}")
             request_id = uuid.uuid4()
 
             if not settings.offline_output_path.exists():
@@ -568,7 +567,7 @@ async def render(
             await task_manager.set_status(task_id=str(request_id), status="processing")
 
             t = asyncio.create_task(start_render_task(
-                audio=request_audio,
+                audio=mono_audio,
                 sample_rate=sample_rate,
                 bps=16,
                 avatar_id=data.avatar,
@@ -579,21 +578,22 @@ async def render(
 
             response.status_code = 200
             response_model = RenderResponseData(job_id=request_id)
+            return response_model
     except Exception as exc:
         logger.error(exc)
-        response.status_code = 500
-        response_model = CommonResponse(detail="Server Internal Error")
-    return response_model
-
+        return JSONResponse(status_code=400, content={
+          "error": "UNKNOWN_ERROR",
+          "description": "Unknown error occured."
+        })
 
 @app.get("/render/status/{job_id}")
 async def status(job_id: str):
     task_status = task_manager.get(task_id=job_id)
     if task_status is None:
-        return {
-            "status": "error",
-            "error": "Task not found"
-        }
+        return JSONResponse(status_code=400, content={
+          "error": "UNKNOWN_JOB_ID",
+          "description": "Job Id is not found."
+        })
     return task_status
 
 
@@ -604,14 +604,23 @@ async def get_result(task_id: str):
     """
     task = task_manager.get(task_id)
     if not task:
-        raise HTTPException(status_code=400, detail="Task not found")
+        return JSONResponse(status_code=400, content={
+            "error": "UNKNOWN_JOB_ID",
+            "description": "Job Id is not found."
+        })
 
     if task.get("status") != "done":
-        raise HTTPException(status_code=400, detail=f"Task not finished: {task.get('status')}")
+        return JSONResponse(status_code=400, content={
+            "error": "BAD_STATUS",
+            "description": "Requested action can not be performed for job in status <status>."
+        })
 
     result_path = settings.offline_output_path / task_id / "video.mp4"
     if not result_path or not Path(result_path).exists():
-        raise HTTPException(status_code=400, detail="Result file not found")
+        return JSONResponse(status_code=400, content={
+          "error": "UNKNOWN_ERROR",
+          "description": "Unknown error occured."
+        })
 
     return FileResponse(
         result_path,
@@ -622,13 +631,27 @@ async def get_result(task_id: str):
 @app.delete("/render/{job_id}")
 async def abort_render(job_id: str):
     logger.info(f"Request to abort task {job_id}")
+
+    task = task_manager.get(job_id)
+    if not task:
+        return JSONResponse(status_code=400, content={
+            "error": "UNKNOWN_JOB_ID",
+            "description": "Job Id is not found."
+        })
+
+    if task.get("status") != "processing":
+        return JSONResponse(status_code=400, content={
+            "error": "BAD_STATUS",
+            "description": "Requested action can not be performed for job in status <status>."
+        })
+
     task_manager.cancel_task(job_id)
 
 
-@app.get("/avatars")
-async def get_avatars():
-    avatars = info()
-    return {"avatars": list(avatars.keys())}
+# @app.get("/avatars")
+# async def get_avatars():
+#     avatars = info()
+#     return {"avatars": list(avatars.keys())}
 
 
 @app.on_event("shutdown")

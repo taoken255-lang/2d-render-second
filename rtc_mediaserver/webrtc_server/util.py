@@ -2,6 +2,7 @@ import asyncio
 import io
 import time
 import wave
+from typing import Tuple, Optional
 
 import numpy as np
 
@@ -50,3 +51,58 @@ def get_sample_rate_from_wav_bytes(wav_bytes):
     except wave.Error as e:
         print(f"Error reading WAV data: {e}")
         return None
+
+def wav_to_mono_and_sample_rate(wav_bytes: bytes) -> Tuple[Optional[int], Optional[bytes]]:
+    """
+    Returns sample_rate and mono wav bytes.
+    If WAV is stereo -> extracts first channel.
+    If invalid/broken -> returns (None, None).
+    """
+
+    bio = io.BytesIO(wav_bytes)
+
+    try:
+        with wave.open(bio, 'rb') as wf:
+            num_channels = wf.getnchannels()
+            sample_width = wf.getsampwidth()
+            sample_rate = wf.getframerate()
+            num_frames = wf.getnframes()
+
+            data = wf.readframes(num_frames)
+
+    except wave.Error:
+        # not a WAV or corrupted
+        return None, None
+
+    # Already mono → return original bytes
+    if num_channels == 1:
+        return sample_rate, wav_bytes
+
+    # Convert raw PCM to numpy
+    try:
+        dtype = {1: np.int8, 2: np.int16, 4: np.int32}.get(sample_width)
+        if dtype is None:
+            return None, None
+
+        pcm = np.frombuffer(data, dtype=dtype)
+
+        # reshape (frames, channels)
+        pcm = pcm.reshape(-1, num_channels)
+
+        # Take left channel (0)
+        mono_pcm = pcm[:, 0]
+
+        mono_bytes = mono_pcm.astype(dtype).tobytes()
+
+    except Exception:
+        return None, None
+
+    # Write mono WAV
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(sample_width)
+        w.setframerate(sample_rate)
+        w.writeframes(mono_bytes)
+
+    return sample_rate, out.getvalue()
