@@ -544,6 +544,7 @@ async def render(
         data.avatar = "iirina"
     try:
         if audio is None:
+            logger.info("audio is empty")
             return JSONResponse(status_code=400, content={
               "error": "WRONG_INPUT",
               "description": "Wrong input."
@@ -553,6 +554,7 @@ async def render(
             request_audio = await audio.read()
             sample_rate, mono_audio = wav_to_mono_and_sample_rate(request_audio)
             if not sample_rate or not mono_audio:
+                logger.info("audio decode error")
                 return JSONResponse(status_code=400, content={
                     "error": "WRONG_INPUT",
                     "description": "Wrong input."
