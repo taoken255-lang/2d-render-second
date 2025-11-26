@@ -3,6 +3,7 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Dict, Any
+from rtc_mediaserver.config import settings
 
 
 class TaskManager:
@@ -31,12 +32,13 @@ class TaskManager:
 
         self.current_task.add_done_callback(cb)
 
-    def cancel_task(self, job_id: str):
+    async def cancel_task(self, job_id: str):
         if self.current_task and self.current_job_id == job_id:
             logging.info(f"Redner task id={self.current_job_id} canceled")
             self.current_task.cancel()
             self.current_task = None
             self.current_job_id = None
+            await self.set_status(job_id, "canceled")
 
     def is_locked(self):
         return self.current_task is not None
@@ -59,3 +61,11 @@ class TaskManager:
 
     def get(self, task_id: str) -> Dict[str, Any] | None:
         return self.tasks.get(task_id)
+
+    async def delete(self, task_id: str) -> None:
+        if task_id in self.tasks:
+            del self.tasks[task_id]
+            await self.save()
+
+
+TASK_MANAGER = TaskManager(settings.offline_output_path / "task_status.json")

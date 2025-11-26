@@ -21,12 +21,13 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTC
 from aiortc.rtcrtpsender import RTCRtpSender  # type: ignore
 from pydantic import BaseModel, UUID4
 from pydantic import ValidationError as PDValidationError
+from rtc_mediaserver.webrtc_server.tools import cleanup_old_results
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
 from rtc_mediaserver.logging_config import get_logger, setup_default_logging
 from rtc_mediaserver.offline_api.grpc_utils import local_video_run
-from rtc_mediaserver.webrtc_server.task_manager import TaskManager
+from rtc_mediaserver.webrtc_server.task_manager import TASK_MANAGER
 from .constants import CAN_SEND_FRAMES, RTC_STREAM_CONNECTED, WS_CONTROL_CONNECTED, USER_EVENTS, AVATAR_SET, INIT_DONE, \
     STATE, State
 from .grpc_client import stream_worker_forever
@@ -43,9 +44,6 @@ setup_default_logging()
 logger = get_logger(__name__)
 
 app = FastAPI(title="Threaded WebRTC Server")
-
-task_manager = TaskManager(settings.offline_output_path / "task_status.json")
-
 
 # Exception handler for invalid JSON
 @app.exception_handler(JSONDecodeError)
@@ -521,10 +519,10 @@ async def start_render_task(
                 avatar_id=avatar_id,
                 output_path=output_path
             )
-        await task_manager.set_status(task_id=str(request_id), status="done")
+        await TASK_MANAGER.set_status(task_id=str(request_id), status="done")
     except Exception as exc:
         logger.error(exc)
-        await task_manager.set_status(task_id=str(request_id), status="error")
+        await TASK_MANAGER.set_status(task_id=str(request_id), status="error")
 
 
 @app.post("/render")
@@ -535,7 +533,7 @@ async def render(
         data: RenderRequestData = RenderRequestData(),
         audio: UploadFile = File(None)
 ):
-    if task_manager.is_locked():
+    if TASK_MANAGER.is_locked():
         return JSONResponse(status_code=400, content={
           "error": "SERVER_BUSY",
           "description": "Server is busy."
@@ -566,7 +564,7 @@ async def render(
                 settings.offline_output_path.mkdir(exist_ok=True, parents=True)
 
             output_path = settings.offline_output_path / str(request_id)
-            await task_manager.set_status(task_id=str(request_id), status="processing")
+            await TASK_MANAGER.set_status(task_id=str(request_id), status="processing")
 
             t = asyncio.create_task(start_render_task(
                 audio=mono_audio,
@@ -576,7 +574,7 @@ async def render(
                 output_path=output_path,
                 request_id=request_id
             ))
-            task_manager.set_task(t, job_id=str(request_id))
+            TASK_MANAGER.set_task(t, job_id=str(request_id))
 
             response.status_code = 200
             response_model = RenderResponseData(job_id=request_id)
@@ -590,7 +588,7 @@ async def render(
 
 @app.get("/render/status/{job_id}")
 async def status(job_id: str):
-    task_status = task_manager.get(task_id=job_id)
+    task_status = TASK_MANAGER.get(task_id=job_id)
     if task_status is None:
         return JSONResponse(status_code=400, content={
           "error": "UNKNOWN_JOB_ID",
@@ -604,7 +602,7 @@ async def get_result(task_id: str):
     """
     Возвращает итоговое видео по task_id.
     """
-    task = task_manager.get(task_id)
+    task = TASK_MANAGER.get(task_id)
     if not task:
         return JSONResponse(status_code=400, content={
             "error": "UNKNOWN_JOB_ID",
@@ -634,7 +632,7 @@ async def get_result(task_id: str):
 async def abort_render(job_id: str):
     logger.info(f"Request to abort task {job_id}")
 
-    task = task_manager.get(job_id)
+    task = TASK_MANAGER.get(job_id)
     if not task:
         return JSONResponse(status_code=400, content={
             "error": "UNKNOWN_JOB_ID",
@@ -647,7 +645,8 @@ async def abort_render(job_id: str):
             "description": "Requested action can not be performed for job in status <status>."
         })
 
-    task_manager.cancel_task(job_id)
+    await TASK_MANAGER.cancel_task(job_id)
+    await cleanup_old_results()
 
 
 # @app.get("/avatars")

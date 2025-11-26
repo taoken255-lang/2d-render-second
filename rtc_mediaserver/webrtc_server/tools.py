@@ -7,6 +7,8 @@ import os
 import shutil
 from pathlib import Path
 
+from rtc_mediaserver.webrtc_server.task_manager import TASK_MANAGER
+
 logger = get_logger(__name__)
 
 def fit_chunk(chunk: np.ndarray, expected_samples: int = AUDIO_SETTINGS.samples_per_chunk) -> np.ndarray:
@@ -34,7 +36,7 @@ def fit_chunk(chunk: np.ndarray, expected_samples: int = AUDIO_SETTINGS.samples_
     return chunk[:expected_samples]
 
 
-def cleanup_old_results():
+async def cleanup_old_results():
     base = Path(settings.offline_output_path)
     dirs = [d for d in base.iterdir() if d.is_dir()]
     if len(dirs) <= settings.offline_results_to_keep:
@@ -47,5 +49,6 @@ def cleanup_old_results():
 
     for d in to_delete:
         shutil.rmtree(d)
+        await TASK_MANAGER.delete(d.name)
 
     logger.info(f"Cleaned results {[str(d) for d in to_delete]}")
