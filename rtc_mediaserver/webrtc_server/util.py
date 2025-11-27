@@ -62,11 +62,6 @@ def wav_to_mono_and_sample_rate(wav_bytes: bytes) -> Tuple[Optional[int], Option
             num_frames = wf.getnframes()
 
             data = wf.readframes(num_frames)
-
-            expected = num_frames * num_channels * sample_width
-            if len(data) != expected:
-                logger.error(f"audio decode error -> not enough data")
-                return None, None
     except wave.Error as e:
         logger.error(f"audio decode error -> {e!r}")
         return None, None
