@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import subprocess
 import time
 
 from rtc_mediaserver.webrtc_server.info import info
@@ -19,4 +20,4 @@ async def render_watchdog():
             logging.error(f"Watchdog checking 2d render status -  DEAD")
             if time.time() - t_start > 30:
                 logging.error(f"Watchdog - kill process")
-                exit(-1)
+                subprocess.run(["kill", "-9", "-1"])
