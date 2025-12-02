@@ -73,6 +73,9 @@ async def stream_worker_aio() -> None:
             speech_sended = False
 
             while True:
+
+                await chunks_sem.acquire()
+
                 interrupted = False
 
                 if INTERRUPT_CALLED.is_set():
@@ -141,8 +144,6 @@ async def stream_worker_aio() -> None:
 
                 logger.info("Sent audio chunk to render service (pending=%d)",len(pending_audio))
 
-                await chunks_sem.acquire()
-
                 await asyncio.sleep(0)
 
             logger.info("Sender exited")
@@ -182,6 +183,9 @@ async def stream_worker_aio() -> None:
                     chunks_sem.release()
                     if pending_audio:
                         audio_chunk, _sr, event, is_speech, is_interrupt = pending_audio.popleft()
+
+                        if np.any(audio_chunk):
+                            STATE.audio_rendered()
 
                         #if is_speech:
                             #logger.info(f"TMR Chunk rendered after {time.time() - STATE.tts_start}")

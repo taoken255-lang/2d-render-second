@@ -78,6 +78,8 @@ async def handle_audio(message: Dict[str, Any], state: ClientState) -> dict:
             "message": "Audio decoding error. Should be valid base-64 string."
         }
 
+    STATE.audio_received()
+
     state.pcm_buf.extend(chunk_bytes)
 
     logger.info(f"is_last={end_flag}")
