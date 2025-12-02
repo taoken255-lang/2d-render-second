@@ -17,7 +17,7 @@ from PIL import Image
 
 from rtc_mediaserver.logging_config import get_logger, setup_default_logging
 from .constants import DEFAULT_IMAGE_PATH, AUDIO_SETTINGS, CAN_SEND_FRAMES, \
-    FRAMES_PER_CHUNK, USER_EVENTS, INTERRUPT_CALLED, COMMANDS_QUEUE, STATE, SYNTHESIZE_IN_PROGRESS
+    FRAMES_PER_CHUNK, USER_EVENTS, INTERRUPT_CALLED, COMMANDS_QUEUE, STATE, SYNTHESIZE_IN_PROGRESS, AUDIO_CHUNK_MS
 from .shared import AUDIO_SECOND_QUEUE, SYNC_QUEUE, SYNC_QUEUE_SEM
 from ..config import settings
 from ..events import ServiceEvents, Conditions
@@ -57,6 +57,7 @@ async def stream_worker_aio() -> None:
     frames_batch: List[Tuple[np.ndarray, int]] = []
 
     CHUNK_SAMPLES = AUDIO_SETTINGS.samples_per_chunk
+    logger.info(f"Audio params: Chunk l={AUDIO_CHUNK_MS}, samples={CHUNK_SAMPLES}")
     chunks_sem = asyncio.Semaphore(settings.max_inflight_chunks)
 
     async def sender_generator():

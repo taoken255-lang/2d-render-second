@@ -7,20 +7,20 @@ from rtc_mediaserver.config import settings
 from rtc_mediaserver.proto.render_service_pb2_grpc import RenderServiceStub
 
 
-def info() -> dict:
+async def info() -> dict:
     if settings.grpc_secure_channel:
-        creds = creds = grpc.ssl_channel_credentials()
+        creds = creds = grpc.aio.ssl_channel_credentials()
         channel = grpc.aio.secure_channel(settings.grpc_server_url, credentials=creds, options=[
             ('grpc.max_receive_message_length', 10 * 1024 * 1024),
             ('grpc.max_send_message_length', 10 * 1024 * 1024),
         ])
     else:
-        channel = grpc.insecure_channel(settings.grpc_server_url, options=[
+        channel = grpc.aio.insecure_channel(settings.grpc_server_url, options=[
             ('grpc.max_receive_message_length', 10 * 1024 * 1024),
             ('grpc.max_send_message_length', 10 * 1024 * 1024),
         ])
     stub = RenderServiceStub(channel)
-    info_response = stub.InfoRouter(rtc_mediaserver.proto.render_service_pb2.InfoRequest())
+    info_response = await stub.InfoRouter(rtc_mediaserver.proto.render_service_pb2.InfoRequest())
 
     data = {}
 

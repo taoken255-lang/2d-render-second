@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import uuid
@@ -122,7 +123,7 @@ async def handle_synthesize_speech(message: Dict[str, Any], state: ClientState) 
 async def handle_set_avatar(message: Dict[str, Any], state: ClientState) -> dict | None:
     avatar_id = message.get("avatarId", None)
 
-    avatars_info = info()
+    avatars_info = await asyncio.wait_for(info(), 0.5)
     available_avatars = list(avatars_info.keys())
 
     if not avatar_id or avatar_id not in available_avatars:
@@ -162,7 +163,7 @@ async def handle_play_animation(message: Dict[str, Any], state: ClientState) -> 
 
     STATE.auto_idle = message.get("auto_idle", True)
 
-    avatars_info = info()
+    avatars_info = await asyncio.wait_for(info(), 0.5)
 
     try:
         if animation not in avatars_info[STATE.avatar]["animations"]:
@@ -197,7 +198,7 @@ async def handle_set_emotion(message: Dict[str, Any], state: ClientState) -> dic
         }
     emotion = message.get("emotion")
 
-    avatars_info = info()
+    avatars_info = await asyncio.wait_for(info(), 0.5)
 
     try:
         if emotion not in avatars_info[STATE.avatar]["emotions"]:
