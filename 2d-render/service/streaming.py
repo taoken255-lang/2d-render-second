@@ -1,3 +1,4 @@
+import subprocess
 from multiprocessing import Queue as mQueue, Process, Value
 from threading import Event, Thread, Lock
 from queue import Queue as tQueue
@@ -536,7 +537,7 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 
 						if frame.error_type in self.critical_exceptions:
 							logger.info("KILL CONTAINER")
-							os._exit(1)
+							subprocess.run(["kill", "-9", "-1"])
 						elif frame.error_type in self.important_exceptions:
 							logger.info("STOP PROCESS")
 							break
