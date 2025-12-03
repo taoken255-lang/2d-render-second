@@ -537,7 +537,7 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 
 						if frame.error_type in self.critical_exceptions:
 							logger.info("KILL CONTAINER")
-							subprocess.run(["kill", "-9", "-1"])
+							os._exit(1)
 						elif frame.error_type in self.important_exceptions:
 							logger.info("STOP PROCESS")
 							break
