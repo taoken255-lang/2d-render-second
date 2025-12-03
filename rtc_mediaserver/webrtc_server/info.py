@@ -7,7 +7,7 @@ import rtc_mediaserver
 from rtc_mediaserver.config import settings
 from rtc_mediaserver.proto.render_service_pb2_grpc import RenderServiceStub
 
-def info() -> dict:
+def _info() -> dict:
     if settings.grpc_secure_channel:
         creds = creds = grpc.ssl_channel_credentials()
         channel = grpc.aio.secure_channel(settings.grpc_server_url, credentials=creds, options=[
@@ -41,3 +41,6 @@ def info() -> dict:
         data[i]["emotions"].extend(info_response.emotions[i].items)
 
     return data
+
+async def info():
+    return await asyncio.wait_for(asyncio.to_thread(_info), 0.5)

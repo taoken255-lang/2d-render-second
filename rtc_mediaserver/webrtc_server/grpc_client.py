@@ -178,7 +178,6 @@ async def stream_worker_aio() -> None:
 
                 if len(frames_batch) == FRAMES_PER_CHUNK:
                     logger.info(f"Got 15 frames for {time.time() - t_start}, audio pending = {len(pending_audio)}")
-                    chunks_sem.release()
                     if pending_audio:
                         audio_chunk, _sr, event, is_speech, is_interrupt = pending_audio.popleft()
 
@@ -204,11 +203,14 @@ async def stream_worker_aio() -> None:
                         logger.info(f"EVENT {event_to_send}")
                         SYNC_QUEUE.put((audio_chunk, frames_batch.copy(), event_to_send))
 
+                        if np.any(audio_chunk):
+                            STATE.audio_rendered()
+
                         #logger.info("SYNC_QUEUE +1 (size=%d)", SYNC_QUEUE.qsize())
                     else:
                         logger.warning("Render service produced %d frames but no matching audio is pending", FRAMES_PER_CHUNK)
                     frames_batch.clear()
-
+                    chunks_sem.release()
                     t_start = time.time()
 
                     await asyncio.sleep(0)

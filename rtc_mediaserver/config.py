@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     uninitialized_rtc_kill_timeout: int = 60
     max_inflight_chunks: int = 3
-    sync_queue_size: int = 2
+    sync_queue_size: int = 3
 
     debug_page_enabled: bool = True
 

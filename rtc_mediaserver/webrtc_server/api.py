@@ -36,6 +36,7 @@ from .handlers import HANDLERS, ClientState
 from .info import info
 from .tts.elevenlabs import synthesize_worker, voices
 from .util import get_sample_rate_from_wav_bytes, wav_to_mono_and_sample_rate
+from .watchdog import watchdog
 from .webrtc_manager import webrtc_manager
 from ..config import settings
 
@@ -88,6 +89,7 @@ async def _startup_event() -> None:
     logger.info("🚀 Isolated WebRTC thread started")
 
     t1 = asyncio.create_task(synthesize_worker())
+    t2 =  asyncio.create_task(watchdog())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -101,7 +103,7 @@ async def index() -> HTMLResponse:  # type: ignore[override]
 async def get_info() -> JSONResponse:
     """Get available avatars with their animations and emotions."""
     try:
-        info_data = info()
+        info_data = await info()
         return JSONResponse(info_data)
     except Exception as e:
         logger.error(f"Error getting info data: {e}")

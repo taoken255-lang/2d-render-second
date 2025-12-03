@@ -77,6 +77,8 @@ async def handle_audio(message: Dict[str, Any], state: ClientState) -> dict:
             "message": "Audio decoding error. Should be valid base-64 string."
         }
 
+    STATE.audio_received()
+
     state.pcm_buf.extend(chunk_bytes)
 
     logger.info(f"is_last={end_flag}")
@@ -122,7 +124,7 @@ async def handle_synthesize_speech(message: Dict[str, Any], state: ClientState) 
 async def handle_set_avatar(message: Dict[str, Any], state: ClientState) -> dict | None:
     avatar_id = message.get("avatarId", None)
 
-    avatars_info = info()
+    avatars_info = await info()
     available_avatars = list(avatars_info.keys())
 
     if not avatar_id or avatar_id not in available_avatars:
@@ -162,7 +164,7 @@ async def handle_play_animation(message: Dict[str, Any], state: ClientState) -> 
 
     STATE.auto_idle = message.get("auto_idle", True)
 
-    avatars_info = info()
+    avatars_info = await info()
 
     try:
         if animation not in avatars_info[STATE.avatar]["animations"]:
@@ -197,7 +199,7 @@ async def handle_set_emotion(message: Dict[str, Any], state: ClientState) -> dic
         }
     emotion = message.get("emotion")
 
-    avatars_info = info()
+    avatars_info = await info()
 
     try:
         if emotion not in avatars_info[STATE.avatar]["emotions"]:
