@@ -101,7 +101,7 @@ async def index() -> HTMLResponse:  # type: ignore[override]
 async def get_info() -> JSONResponse:
     """Get available avatars with their animations and emotions."""
     try:
-        info_data = await asyncio.wait_for(info(), 0.5)
+        info_data = info()
         return JSONResponse(info_data)
     except Exception as e:
         logger.error(f"Error getting info data: {e}")
@@ -426,17 +426,17 @@ async def health():
         return Response(status_code=500)
     return Response(status_code=200)
 
-@app.get("/render_status")
-async def render_status():
-    try:
-        await asyncio.wait_for(info(), 0.5)
-    except:
-        return JSONResponse(status_code=400, content={
-            "status":"timeout"
-        })
-    return JSONResponse(status_code=200, content={
-        "status": "ok"
-    })
+# @app.get("/render_status")
+# async def render_status():
+#     try:
+#         info()
+#     except:
+#         return JSONResponse(status_code=400, content={
+#             "status":"timeout"
+#         })
+#     return JSONResponse(status_code=200, content={
+#         "status": "ok"
+#     })
 
 @app.websocket("/ws")
 async def control_ws(websocket: WebSocket):  # type: ignore[override]
