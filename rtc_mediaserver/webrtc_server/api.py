@@ -1,33 +1,41 @@
 """FastAPI application exposing WebRTC endpoints and single control websocket."""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import random
+import time
 import uuid
+
 from json import JSONDecodeError
 from pathlib import Path
+from typing import Any, Dict, Optional, Union
 
+import wave
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, Depends, File, Form, BackgroundTasks
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.exceptions import RequestValidationError
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCDataChannel, RTCConfiguration  # type: ignore
 from aiortc.rtcrtpsender import RTCRtpSender  # type: ignore
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, UploadFile, File, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from pydantic import BaseModel, UUID4
+from pydantic import ValidationError as PDValidationError
+from rtc_mediaserver.webrtc_server.tools import cleanup_old_results
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
 from rtc_mediaserver.logging_config import get_logger, setup_default_logging
 from rtc_mediaserver.offline_api.grpc_utils import local_video_run
 from rtc_mediaserver.webrtc_server.task_manager import TASK_MANAGER
-from rtc_mediaserver.webrtc_server.tools import cleanup_old_results
 from .constants import CAN_SEND_FRAMES, RTC_STREAM_CONNECTED, WS_CONTROL_CONNECTED, USER_EVENTS, AVATAR_SET, INIT_DONE, \
     STATE, State
 from .grpc_client import stream_worker_forever
+from .player import WebRTCMediaPlayer
 from .handlers import HANDLERS, ClientState
 from .info import info
-from .player import WebRTCMediaPlayer
 from .tts.elevenlabs import synthesize_worker, voices
-from .util import wav_to_mono_and_sample_rate
+from .util import get_sample_rate_from_wav_bytes, wav_to_mono_and_sample_rate
 from .webrtc_manager import webrtc_manager
 from ..config import settings
 
@@ -162,7 +170,7 @@ def sdp_set_bandwidth(sdp: str, *, video_kbps: int = 4000, audio_kbps: int = 128
     return "\r\n".join(out) + "\r\n"
 
 import asyncio, logging, time
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 log = logging.getLogger("webrtc.encoder")
 

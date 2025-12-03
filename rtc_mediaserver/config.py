@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     websocket_port: int = 8001
     
     # gRPC settings
-    grpc_server_url: str = "localhost:8500" #"2d.digitalavatars.ru"  # Default 2d-render port
+    grpc_server_url: str = "localhost:8501" #"2d.digitalavatars.ru"  # Default 2d-render port
     grpc_secure_channel: bool = False
 
     # Audio settings
@@ -31,7 +31,6 @@ class Settings(BaseSettings):
     audio_channels: int = 1
     audio_format: str = "s16le"
     audio_chunk_duration: float = 1.0  # Duration of audio chunks sent to 2d-render (seconds)
-    audio_chunk_ms: int = 600
     
     # Video settings
     video_width: int = 640
@@ -43,8 +42,7 @@ class Settings(BaseSettings):
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
     uninitialized_rtc_kill_timeout: int = 60
-    max_inflight_chunks: int = 3
-    sync_queue_chunks: int = 1
+    max_inflight_chunks: int = 2
 
     debug_page_enabled: bool = True
 

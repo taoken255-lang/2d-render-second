@@ -6,7 +6,6 @@ import fractions
 import logging
 import os
 import threading
-import time
 from pathlib import Path
 
 __all__ = [
@@ -24,8 +23,6 @@ __all__ = [
 
 from aiortc import RTCPeerConnection
 
-from rtc_mediaserver.config import settings
-from rtc_mediaserver.logging_config import get_logger
 from rtc_mediaserver.webrtc_server.shared import SYNC_QUEUE, SYNC_QUEUE_SEM, AUDIO_SECOND_QUEUE
 
 
@@ -62,7 +59,7 @@ AUDIO_SETTINGS = AudioParams()
 
 # ── New chunk settings based on audio duration ──────────────────────
 # Duration of minimal audio chunk required by gRPC (milliseconds)
-AUDIO_CHUNK_MS: int = settings.audio_chunk_ms  # 0.6 seconds
+AUDIO_CHUNK_MS: int = int(os.getenv("AUDIO_CHUNK_MS", "600"))  # 0.6 seconds
 # -------------------------------------------------------------------
 
 # Video constants
@@ -99,8 +96,6 @@ COMMANDS_QUEUE = asyncio.Queue()
 
 SENTENCES_QUEUE = asyncio.Queue()
 
-logger = get_logger(__name__)
-
 class State:
     def __init__(self):
         self.streamer_task: asyncio.Task = None
@@ -112,9 +107,6 @@ class State:
         self.chunks_to_skip: int = 0
         self.tts_start: float = 0
         self.first_chunk_received: bool = False
-        self.perf_t: float = None
-        self.first_call_r = True
-        self.first_call_s = True
 
     def kill_streamer(self):
         if self.streamer_task:
@@ -156,24 +148,5 @@ class State:
                 break
 
         STATE.first_chunk_received = False
-
-    def audio_received(self):
-        if not self.perf_t:
-            self.perf_t = time.time()
-
-    def audio_rendered(self):
-        if self.perf_t and self.first_call_r:
-            logger.info(f"PERF_T {time.time() - self.perf_t}")
-            self.first_call_r = False
-
-    def send_to_client(self):
-        if self.perf_t and self.first_call_s:
-            logger.info(f"PERF_T {time.time() - self.perf_t}")
-            self.first_call_s = False
-
-    def zero_perf_timer(self):
-        self.perf_t = None
-        self.first_call_r = True
-        self.first_call_s = True
 
 STATE = State()

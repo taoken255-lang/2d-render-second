@@ -117,8 +117,6 @@ class PlayerStreamTrack(MediaStreamTrack):
             async def send_event(evt: str):
                 logging.info(f"Send event {event}")
                 USER_EVENTS.put_nowait({"type": event})
-                if event == "eos":
-                    STATE.zero_perf_timer()
                 await asyncio.sleep(0)
             asyncio.run_coroutine_threadsafe(send_event(event), self._player.main_loop)
 
@@ -322,8 +320,6 @@ class WebRTCMediaPlayer:
         if event == "interrupted":
             return True
         frame = av.AudioFrame(format="s16", layout="mono", samples=AUDIO_SETTINGS.audio_samples)
-        if np.any(chunk):
-            STATE.send_to_client()
         frame.planes[0].update(chunk.tobytes())
         frame.sample_rate = AUDIO_SETTINGS.sample_rate
 
