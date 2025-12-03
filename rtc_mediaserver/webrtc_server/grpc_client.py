@@ -73,6 +73,7 @@ async def stream_worker_aio() -> None:
             speech_sended = False
 
             while True:
+                await chunks_sem.acquire()
                 interrupted = False
 
                 if INTERRUPT_CALLED.is_set():
@@ -140,8 +141,6 @@ async def stream_worker_aio() -> None:
                             set_emotion=render_service_pb2.SetEmotion(emotion=evt_payload))
 
                 logger.info("Sent audio chunk to render service (pending=%d)",len(pending_audio))
-
-                await chunks_sem.acquire()
 
                 await asyncio.sleep(0)
 

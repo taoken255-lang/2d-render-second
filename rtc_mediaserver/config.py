@@ -42,7 +42,8 @@ class Settings(BaseSettings):
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
     uninitialized_rtc_kill_timeout: int = 60
-    max_inflight_chunks: int = 2
+    max_inflight_chunks: int = 3
+    sync_queue_size: int = 2
 
     debug_page_enabled: bool = True
 
