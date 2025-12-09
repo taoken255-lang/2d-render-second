@@ -95,7 +95,7 @@ async def _startup_event() -> None:
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:  # type: ignore[override]
     if not settings.debug_page_enabled:
-        return Response(status_code=404)
+        return Response(status_code=200, content="DEBUG PAGE DISABLED")
     return HTMLResponse(HTML_FILE.read_text(encoding="utf-8"))
 
 

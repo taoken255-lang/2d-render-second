@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     max_inflight_chunks: int = 3
     sync_queue_size: int = 3
 
-    debug_page_enabled: bool = True
+    debug_page_enabled: bool = False
 
     elevenlabs_api_url: str = "https://karimrashid.metahumansdk.io/" #"https://api.elevenlabs.io/"
     elevenlabs_ws_url: str = "wss://karimrashid.metahumansdk.io/"

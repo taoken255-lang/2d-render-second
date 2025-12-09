@@ -1,5 +1,6 @@
 import asyncio
 import os
+import signal
 import time
 
 from rtc_mediaserver.logging_config import get_logger
@@ -10,6 +11,7 @@ logger = get_logger(__name__)
 async def watchdog():
     t_s = time.time()
     logger.info(f"Watchdog started")
+
     while True:
         await asyncio.sleep(10)
         try:
@@ -21,4 +23,4 @@ async def watchdog():
             logger.info(f"Watchdog check status - FAILED")
             if time.time() - t_s >= 30:
                 logger.info(f"Watchdog KILL CONTAINER")
-                os.system("kill -9 -1")
+                os._exit(1)
