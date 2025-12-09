@@ -35,7 +35,7 @@ if __name__ == "__main__":  # pragma: no cover
             "rtc_mediaserver.webrtc_server.api:app",
             host="0.0.0.0",
             port=settings.port,
-            reload=True,
+            reload=False,
             access_log=True,
             ssl_keyfile=settings.ssl_key,
             ssl_certfile=settings.ssl_cert,
@@ -47,7 +47,7 @@ if __name__ == "__main__":  # pragma: no cover
             "rtc_mediaserver.webrtc_server.api:app",
             host="0.0.0.0",
             port=settings.port,
-            reload=True,
+            reload=False,
             access_log=True,
             loop="asyncio"
         )
