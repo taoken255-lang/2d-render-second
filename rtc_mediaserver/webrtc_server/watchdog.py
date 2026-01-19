@@ -21,6 +21,6 @@ async def watchdog():
             t_s = time.time()
         except:
             logger.info(f"Watchdog check status - FAILED")
-            if time.time() - t_s >= 30:
+            if time.time() - t_s >= 600:
                 logger.info(f"Watchdog KILL CONTAINER")
                 os._exit(1)
