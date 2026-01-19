@@ -385,7 +385,7 @@ def get_mqueue_thread(from_queue, to_queue, is_alpha, output_format, alpha_servi
 	with logger.contextualize(request_id=request_id):
 		try:
 			while True:
-				frame = from_queue.get(timeout=300)
+				frame = from_queue.get(timeout=600)
 				if isinstance(frame, EventObject):
 					# logger.info("EVENTOBJECT")
 					to_queue.put(frame)
