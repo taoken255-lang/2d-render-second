@@ -386,7 +386,7 @@ class StreamSDK:
         while not self.stop_event.is_set():
             try:
                 item = self.audio2motion_queue.get(timeout=1)    # audio feat
-                logger.info("GET ITEM FROM AUDIO2MOTION")
+                # logger.info("GET ITEM FROM AUDIO2MOTION")
             except queue.Empty:
                 continue
 
@@ -411,9 +411,9 @@ class StreamSDK:
                 if aud_cond.shape[1] < seq_frames:
                     pad = np.stack([aud_cond[:, -1]] * (seq_frames - aud_cond.shape[1]), 1)
                     aud_cond = np.concatenate([aud_cond, pad], 1)
-                logger.info(f"START AUDIO2MOTION")
+                # logger.info(f"START AUDIO2MOTION")
                 res_kp_seq = self.audio2motion(aud_cond, res_kp_seq)
-                logger.info(f"END AUDIO2MOTION")
+                # logger.info(f"END AUDIO2MOTION")
                 idx += valid_clip_len
             #
             # pbar.close()
@@ -432,7 +432,7 @@ class StreamSDK:
 
                 while not self.stop_event.is_set():
                     try:
-                        logger.info(f"PUT TO MOTION STITCH QUEUE")
+                        # logger.info(f"PUT TO MOTION STITCH QUEUE")
                         self.motion_stitch_queue.put([frame_idx, x_d_info, ctrl_kwargs], timeout=1)
                         break
                     except queue.Full:
@@ -459,18 +459,18 @@ class StreamSDK:
         while not self.stop_event.is_set():
             try:
                 item = self.audio2motion_queue.get(timeout=1)    # audio feat
-                logger.info("GET ITEM FROM AUDIO2MOTION")
+                # logger.info("GET ITEM FROM AUDIO2MOTION")
             except queue.Empty:
                 continue
             if item is None:
                 is_end = True
             else:
                 item_buffer = np.concatenate([item_buffer, item], 0)
-                logger.info("ADD ITEM TO BUFFER")
+                # logger.info("ADD ITEM TO BUFFER")
 
             if not is_end and item_buffer.shape[0] < valid_clip_len:
                 # wait at least valid_clip_len new item
-                logger.info(f"WAIT UNTIL BUFFER LENGTH LESS THAN {valid_clip_len}")
+                # logger.info(f"WAIT UNTIL BUFFER LENGTH LESS THAN {valid_clip_len}")
                 continue
             else:
                 self.audio_feat = np.concatenate([self.audio_feat, item_buffer], 0)
@@ -479,7 +479,7 @@ class StreamSDK:
 
             while True:
                 aud_feat = self.audio_feat[local_idx: local_idx+seq_frames]
-                logger.info(f"GOT AUDIO FEATURES")
+                # logger.info(f"GOT AUDIO FEATURES")
                 real_valid_len = valid_clip_len
                 if len(aud_feat) == 0:
                     break
@@ -493,12 +493,12 @@ class StreamSDK:
                         pad = np.stack([aud_feat[-1]] * (seq_frames - len(aud_feat)), 0)
                         aud_feat = np.concatenate([aud_feat, pad], 0)
 
-                logger.info(f"START AUDIO CONDITIONS")
+                # logger.info(f"START AUDIO CONDITIONS")
                 aud_cond = self.condition_handler(aud_feat, global_idx + self.cond_idx_start)
-                logger.info(f"END AUDIO CONDITIONS")
-                logger.info(f"START AUDIO2MOTION")
+                # logger.info(f"END AUDIO CONDITIONS")
+                # logger.info(f"START AUDIO2MOTION")
                 res_kp_seq = self.audio2motion(aud_cond, res_kp_seq)
-                logger.info(f"END AUDIO2MOTION")
+                # logger.info(f"END AUDIO2MOTION")
                 if res_kp_seq_valid_start is None:
                     # online mode, first chunk
                     res_kp_seq_valid_start = res_kp_seq.shape[1] - self.audio2motion.fuse_length

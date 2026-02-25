@@ -27,6 +27,12 @@ elif Config.LOG_LEVEL == "DEBUG":
 		format="{time} | {level} | {extra[request_id]} | {message}",
 		level="DEBUG"
 	)
+elif Config.LOG_LEVEL == "TRACE":
+	logger.add(
+		sys.stdout,
+		format="{time} | {level} | {extra[request_id]} | {message}",
+		level="TRACE"
+	)
 elif Config.LOG_LEVEL == "WARNING":
 	logger.add(
 		sys.stdout,

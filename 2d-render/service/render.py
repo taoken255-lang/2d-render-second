@@ -42,6 +42,9 @@ class RenderService:
 
 			self.is_setup_nd = True
 			self.timer_first_flag = True
+			self.first_render_chunk_logged = False
+			self.first_run_chunk_logged = False
+			self.chunks_rx = 0
 			self.start_time = 0
 			self.animation_to_play = []
 			self.emotion_to_play = []
@@ -63,6 +66,13 @@ class RenderService:
 		self.render_object(render_object=RenderEmotionObject(render_data=emotion))
 		# self.emotion_to_play.append(emotion)
 		logger.info(f"emotion got: {emotion}")
+
+	def clear_animations(self):
+		logger.info("CLEAR_ANIMATIONS: clearing animation queue")
+		self.sdk.clear_animations()
+
+	def interrupt(self):
+		self.sdk.interrupt()
 
 	def handle_image(self, image_chunk, video_queue: Queue):
 		try:
@@ -98,7 +108,7 @@ class RenderService:
 			else:
 				sts = int(Config.ONLINE_STREAMING_TIMESTAMPS) if self.is_online else int(Config.ONLINE_RENDER_TIMESTAMPS)
 
-			args = {"online_mode": self.is_online,
+			args = {"online_mode": True,
 			        "video_segments_path": f"{base_path}/{avatar_name}.json",
 			        "emotions_path": f"{base_path}/emotions/" if emotions else None,
 			        "sampling_timesteps": sts,
@@ -108,7 +118,8 @@ class RenderService:
 			        "A2M_MAX_SIZE": int(Config.A2M_MAX_SIZE),
 			        "idle_name": idle_name,
 			        "version_name": version_name}
-			logger.info(agnet_config)
+			if agnet_config:
+				logger.info(agnet_config)
 			args.update(agnet_config)
 			if sts == 5:
 				args["sampling_timesteps"] = 5
@@ -120,7 +131,8 @@ class RenderService:
 
 	def render_chunk_offline(self, audio_chunk, frame_rate: int, is_last: bool):
 		if not is_last:
-			logger.debug("START CHUNK RENDER")
+			# TRACE: called per chunk (~100+ per request)
+			logger.trace("START CHUNK RENDER")
 			wav_buffer = io.BytesIO()
 			with wave.open(wav_buffer, 'wb') as wav_file:
 				wav_file.setnchannels(1)
@@ -129,7 +141,11 @@ class RenderService:
 				wav_file.writeframes(audio_chunk)
 			wav_buffer.seek(0)
 
+			# TRACE: per-chunk timing (~100+ per request)
+			decode_start = time.perf_counter()
 			audio, sr = librosa.load(wav_buffer, sr=16000)
+			decode_elapsed = time.perf_counter() - decode_start
+			logger.trace(f"[EVENT] audio_decode_resample={decode_elapsed:.3f}s")
 
 			self.audio_buffer = np.append(self.audio_buffer, audio)
 		else:
@@ -137,9 +153,14 @@ class RenderService:
 			self.sdk.audio2motion_queue.put(aud_feat)
 
 	def render_chunk_online(self, audio_chunk, frame_rate: int, is_last: bool, is_voice: bool = True):
-		logger.debug("START CHUNK RENDER")
+		# TRACE: called per chunk (~100+ per request)
+		logger.trace("START CHUNK RENDER")
+		if not self.first_render_chunk_logged:
+			logger.info("[EVENT] first_render_chunk_call")
+			self.first_render_chunk_logged = True
 		if not is_last:
-			logger.debug("IS NOT LAST")
+			logger.trace("IS NOT LAST")
+			self.chunks_rx += 1
 			wav_buffer = io.BytesIO()
 			with wave.open(wav_buffer, 'wb') as wav_file:
 				wav_file.setnchannels(1)
@@ -148,12 +169,20 @@ class RenderService:
 				wav_file.writeframes(audio_chunk)
 			wav_buffer.seek(0)
 
+			if self.chunks_rx == 1:
+				logger.info("[EVENT] librosa_decode_start")
+			decode_start = time.perf_counter()
 			audio, sr = librosa.load(wav_buffer, sr=16000)
+			decode_ms = (time.perf_counter() - decode_start) * 1000
+			# Log first 5 decode times to measure librosa overhead
+			if self.chunks_rx <= 5:
+				logger.info(f"[TIMING] [AUDIO] decode_ms={decode_ms:.1f} chunk_bytes={len(audio_chunk)} samples={len(audio)}")
 			self.audio_buffer = np.append(self.audio_buffer, audio)
+			# logger.info(f"PUT AUDIO IN BUFFER 16K AUDIO: {len(audio)} BUFFER: {len(self.audio_buffer)}")
 
 		if len(self.animation_to_play) > 0:
 			video_segment_name = self.animation_to_play.pop(0)
-			logger.info(f"add video segment {video_segment_name[0]}")
+			# logger.info(f"add video segment {video_segment_name[0]}")
 			self.sdk.add_video_segment(video_segment_name)
 
 		if len(self.emotion_to_play) > 0:
@@ -170,17 +199,25 @@ class RenderService:
 			audio_chunk = self.audio_buffer[i:i + split_len]  # передавать кусок предыдущего чанка в следующий?
 			if len(audio_chunk) < split_len:
 				if is_last:
-					logger.debug("IS LAST")
+					# TRACE: per-chunk state, not milestone
+					logger.trace("IS LAST")
 					audio_chunk = np.pad(audio_chunk, (0, split_len - len(audio_chunk)), mode="constant")
 					if self.timer_first_flag:
 						self.start_time = time.perf_counter()
 						self.timer_first_flag = False
+					if not self.first_run_chunk_logged:
+						logger.info(f"[TIMING] [AUDIO] first_run_chunk chunks_rx={self.chunks_rx} buf_samples={len(self.audio_buffer)}")
+						self.first_run_chunk_logged = True
 					self.sdk.run_chunk(audio_chunk, chunksize, is_voice)
 			else:
 				if self.timer_first_flag:
 					self.start_time = time.perf_counter()
 					self.timer_first_flag = False
+				if not self.first_run_chunk_logged:
+					logger.info(f"[TIMING] [AUDIO] first_run_chunk chunks_rx={self.chunks_rx} buf_samples={len(self.audio_buffer)}")
+					self.first_run_chunk_logged = True
 				idx = i + chunksize[1] * 640
+				# logger.info(f"GOT AUDIO FROM BUFFER: {len(audio_chunk)}")
 				self.sdk.run_chunk(audio_chunk, chunksize, is_voice)
 		self.audio_buffer = self.audio_buffer[idx::]
 

@@ -20,6 +20,8 @@ from agnet.core.atomic_components.wav2feat import Wav2Feat
 from agnet.core.atomic_components.cfg import parse_cfg, print_cfg
 
 from service.object_models import EventObject, RenderEmotionObject, RenderAnimationObject
+from service.progress.timing import TimingTracker
+from config import Config
 
 
 """
@@ -93,15 +95,26 @@ class StreamSDK:
 
         self.default_kwargs = default_kwargs
 
-        self.avatar_registrar = AvatarRegistrar(**avatar_registrar_cfg)
+        t_loading = TimingTracker(enabled=True, log_each=False)
+        t_loading.point("loading_start")
+        with t_loading.measure("load_avatar_registrar"):
+            self.avatar_registrar = AvatarRegistrar(**avatar_registrar_cfg)
         self.condition_handler = ConditionHandler(**condition_handler_cfg)
-        self.audio2motion = Audio2Motion(lmdm_cfg)
-        self.motion_stitch = MotionStitch(stitch_network_cfg)
-        self.warp_f3d = WarpF3D(warp_network_cfg)
-        self.decode_f3d = DecodeF3D(decoder_cfg)
+        with t_loading.measure("load_audio2motion"):
+            self.audio2motion = Audio2Motion(lmdm_cfg)
+        with t_loading.measure("load_motion_stitch"):
+            self.motion_stitch = MotionStitch(stitch_network_cfg)
+        with t_loading.measure("load_warp_f3d"):
+            self.warp_f3d = WarpF3D(warp_network_cfg)
+        with t_loading.measure("load_decode_f3d"):
+            self.decode_f3d = DecodeF3D(decoder_cfg)
         self.putback = PutBack()
 
-        self.wav2feat = Wav2Feat(**wav2feat_cfg)
+        with t_loading.measure("load_wav2feat"):
+            self.wav2feat = Wav2Feat(**wav2feat_cfg)
+        t_loading.point("loading_end")
+        t_loading.delta("total", "loading_start", "loading_end")
+        t_loading.log_summary(label="LOADING", include_points=False)
 
         self.seq_video_extractor = SequentialPyAVFrameExtractor()
         self.stop_event = threading.Event()
@@ -110,9 +123,18 @@ class StreamSDK:
         """
         Add video segment to buffer.
         """
-        logger.info(f"add video segment {video_segment_name[0]} into buffer({self.video_segment_buffer})")
+        logger.debug(f"add video segment {video_segment_name[0]} into buffer({self.video_segment_buffer})")
 
         self.video_segment_buffer.append(video_segment_name)
+
+    def clear_animations(self):
+        """
+        Clear all pending animations from the queue.
+        After current animation finishes, will return to idle.
+        """
+        logger.info(f"Clearing animation queue. Current queue: {self.video_segment_buffer}")
+        self.video_segment_buffer.clear()
+        logger.info("Animation queue cleared")
 
     def add_emotion(self, emotion_name: str, gain: int = 10):
         """
@@ -159,11 +181,16 @@ class StreamSDK:
         self.ctrl_info = ctrl_info
 
     def setup(self, source_path, output_path, **kwargs):  # SOURCE_PATH: BYTES  <---------------------------------------
+        # ======== Create Timing Tracker ========
+        self.timing = TimingTracker(enabled=True)
+        self.timing.point("setup_start")
+
         # ======== Prepare Options ========
         kwargs = self._merge_kwargs(self.default_kwargs, kwargs)
-        print("=" * 20, "setup kwargs", "=" * 20)
-        print_cfg(**kwargs)
-        print("=" * 50)
+        if os.getenv("LOG_DUMP_KWARGS") == "1":
+            print("=" * 20, "setup kwargs", "=" * 20)
+            print_cfg(**kwargs)
+            print("=" * 50)
 
         # -- avatar_registrar: template cfg --
         self.max_size = kwargs.get("max_size", 1920)
@@ -205,6 +232,7 @@ class StreamSDK:
         self.flag_stitching = kwargs.get("flag_stitching", True)
 
         self.ctrl_info = kwargs.get("ctrl_info", dict())
+        self.ctrl_kwargs = kwargs.get("ctrl_kwargs", dict())
         self.overall_ctrl_info = kwargs.get("overall_ctrl_info", dict())
         """
         ctrl_info: list or dict
@@ -262,11 +290,18 @@ class StreamSDK:
             version_name=kwargs.get("version_name", None),
             **crop_kwargs,
         )
+        self.timing.point("avatar_loaded")
 
         if len(source_info["x_s_info_lst"]) > 1 and self.smo_k_s > 1:
             source_info["x_s_info_lst"] = smooth_x_s_info_lst(source_info["x_s_info_lst"], smo_k=self.smo_k_s)
 
         self.source_info = source_info
+
+        self.si_img_rgb_list = self.source_info["img_rgb_lst"]
+        self.si_M_c2o_lst = self.source_info["M_c2o_lst"]
+        self.si_f_s_lst = self.source_info["f_s_lst"]
+        self.si_x_s_info_lst = self.source_info["x_s_info_lst"]
+
         self.source_info_frames = len(source_info["x_s_info_lst"])
 
         # ======== Setup Condition Handler ========
@@ -306,6 +341,9 @@ class StreamSDK:
             overall_ctrl_info=self.overall_ctrl_info,
             fix_exp_a1_alpha=fix_exp_a1_alpha
         )
+
+        del source_info
+        del self.source_info
 
         # ======== Video Writer ========
         # self.output_path = output_path
@@ -355,8 +393,10 @@ class StreamSDK:
             # threading.Thread(target=self.writer_worker),     <--------------------------------------------------------
         ]
         self.first_chunk = True
+        self._inference_start_logged = False
         for thread in self.thread_list:
             thread.start()
+        self.timing.point("threads_started")
 
         logger.info("------------------------------ ALL THREADS STARTED ------------------------------")
 
@@ -376,14 +416,15 @@ class StreamSDK:
 
         logger.info(f"ANIMATIONS: {self.video_exists}")
         logger.info(f"EMOTIONS: {self.emotion_exists}")
+        self.timing.point("setup_end")
 
     def interrupt(self):
-        try:
-            for q in self.queue_list:
-                while not q.empty():
-                    q.get_nowait()
-        except Exception:
-            pass
+        """
+        Soft interrupt: force mouth to close without dropping frames.
+        Sets force_silence flag to override is_voice for all frames.
+        """
+        logger.info("INTERRUPT: enabling force_silence mode")
+        self.force_silence = True
 
     def setup_emotions(self, emotions_path: str):
         emotions_info_path = f"{emotions_path}/info.json"
@@ -445,6 +486,11 @@ class StreamSDK:
         self.video_segment_auto_idle = True
         self.video_segment_previous = ""
 
+        # Soft interrupt: force silence without clearing queues
+        self.force_silence = False
+        # Per-frame muted state queue, filled by _motion_stitch_worker, consumed by stream_frames
+        self.muted_frames_queue = queue.Queue()
+
         # Handle global gen frame index
         self.gen_frame_idx = self.video_segment_info[self.idle_name]["start"]
         self.seq_video_extractor.seek_to_frame(self.gen_frame_idx)
@@ -458,7 +504,8 @@ class StreamSDK:
                 if item is not None:
                     yield item
             except queue.Empty:
-                logger.info("PROCESSES ARE RUNNING!")
+                # TRACE: heartbeat every 1s while waiting - spam during normal operation
+                logger.trace("[EVENT] processes_running")
                 continue
             except Exception as e:
                 self.worker_exception = e
@@ -528,12 +575,13 @@ class StreamSDK:
                 # logger.info(pb_res_time_list)
                 break
             frame_idx, render_img, frame_pb, is_alpha = item
-            # frame_rgb = self.source_info["img_rgb_lst"][frame_idx]
+            # frame_rgb = self.si_img_rgb_list[frame_idx]
             if self.video_exists:
                 frame_rgb = frame_pb
             else:
-                frame_rgb = self.source_info["img_rgb_lst"][frame_idx]
-            M_c2o = self.source_info["M_c2o_lst"][frame_idx]
+                frame_rgb = self.si_img_rgb_list[frame_idx]
+            M_c2o = self.si_M_c2o_lst[frame_idx]
+            logger.trace(f"FRAME_PB IN PB WORKER: {type(frame_pb)}")
             res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
             self.writer_queue.put(res_frame_rgb)
             # pb_res_time_list.append(time.perf_counter() - self.union_start)
@@ -565,12 +613,15 @@ class StreamSDK:
                 # logger.info(df3d_res_time_list)
                 break
             frame_idx, f_3d, frame_pb, is_alpha = item
+            # TODO: clean old commented logs
             # start = time.perf_counter()
             # logger.info("------------------------ DECODOE F3D START ------------------------")
-            render_img = self.decode_f3d(f_3d)
+            with self.timing.measure("inference_decode_f3d"):
+                render_img = self.decode_f3d(f_3d)
             # end = time.perf_counter()
             # logger.info(f"------------------------ DECODOE F3D END {end-start} ------------------------")
             # logger.info("PUTBACK QUEUE PUT")
+            self.timing.point_once("first_decode_f3d_out")
             self.putback_queue.put([frame_idx, render_img, frame_pb, is_alpha])
             # df3d_res_time_list.append(time.perf_counter() - self.union_start)
 
@@ -601,15 +652,18 @@ class StreamSDK:
                 # logger.info(wf3d_res_time_list)
                 break
             frame_idx, x_s, x_d, frame_pb, is_alpha = item
-            f_s = self.source_info["f_s_lst"][frame_idx]
-            # start = time.perf_counter()
-            # logger.info("---------------- WARP F3D START ----------------")
+            f_s = self.si_f_s_lst[frame_idx]
             if self.video_exists:
                 f_s = f_s.to(torch.float32).numpy()
-            f_3d = self.warp_f3d(f_s, x_s, x_d)
+            # TODO: clean old commented logs
+            # start = time.perf_counter()
+            # logger.info("---------------- WARP F3D START ----------------")
+            with self.timing.measure("inference_warp_f3d"):
+                f_3d = self.warp_f3d(f_s, x_s, x_d)
             # end = time.perf_counter()
             # logger.info(f"---------------- WARP F3D END {end-start} ----------------")
             # logger.info("DECODE F3D QUEUE PUT")
+            self.timing.point_once("first_warp_f3d_out")
             self.decode_f3d_queue.put([frame_idx, f_3d, frame_pb, is_alpha])
             # wf3d_res_time_list.append(time.perf_counter() - self.union_start)
 
@@ -650,10 +704,24 @@ class StreamSDK:
                 ctrl_kwargs['is_voice'] = is_voice
                 if vad:
                     ctrl_kwargs["is_voice"] = False
-            x_s_info = self.source_info["x_s_info_lst"][frame_idx]  # Данные по картинке - ? motion extractor по кадру (? кадр 1 для картинки
+
+            # Force silence on interrupt: override is_voice and use softer silence params
+            is_muted = self.force_silence
+            if self.force_silence:
+                ctrl_kwargs["is_voice"] = False
+                ctrl_kwargs["silence_threshold"] = 0  # Start immediately
+                ctrl_kwargs["silence_transition_frames"] = 10  # Smooth 400ms transition
+                ctrl_kwargs["silence_alpha"] = 0.0  # Full mute
+
+            # Record per-frame muted state for stream_frames_thread
+            self.muted_frames_queue.put(is_muted)
+
+            x_s_info = self.si_x_s_info_lst[frame_idx]  # Данные по картинке - ? motion extractor по кадру (? кадр 1 для картинки
             if not self.emotion_exists:
-                x_s, x_d, is_alpha = self.motion_stitch(x_s_info, x_d_info, **ctrl_kwargs)
+                with self.timing.measure("inference_motion_stitch"):
+                    x_s, x_d, is_alpha = self.motion_stitch(x_s_info, x_d_info, **ctrl_kwargs)
             else:
+                # TODO: clean old commented logs
                 # start = time.perf_counter()
                 # logger.info("-------- MOTION STITCH START --------")
                 # logger.info(f"{self.current_emotion}, {self.next_emotion}")
@@ -688,11 +756,13 @@ class StreamSDK:
                     x_exp_emo = 0
 
                 # -------------------------------------------------------
-                x_s, x_d, is_alpha = self.motion_stitch(x_s_info, x_d_info, x_exp_emo=x_exp_emo, **ctrl_kwargs)
+                with self.timing.measure("inference_motion_stitch"):
+                    x_s, x_d, is_alpha = self.motion_stitch(x_s_info, x_d_info, x_exp_emo=x_exp_emo, **ctrl_kwargs)
 
             # end = time.perf_counter()
             # logger.info(f"-------- MOTION STITCH END {end-start} --------")
             # logger.info("WARP F3D QUEUE PUT")
+            self.timing.point_once("first_motion_stitch_out")
             self.warp_f3d_queue.put([frame_idx, x_s, x_d, frame_pb, is_alpha])
             # ms_res_time_list.append(time.perf_counter() - self.union_start)
 
@@ -761,7 +831,8 @@ class StreamSDK:
                 #     a2m_start_time = time.perf_counter()
                 #     first_flag = False
                 aud_cond = self.condition_handler(aud_feat, global_idx + self.cond_idx_start)[None]  # берем условия если есть
-                res_kp_seq = self.audio2motion(aud_cond, res_kp_seq)  # предсказываем кейпоинты по условиям из аудио и предыдущему чанку
+                with self.timing.measure("inference_audio2motion"):
+                    res_kp_seq = self.audio2motion(aud_cond, res_kp_seq)  # предсказываем кейпоинты по условиям из аудио и предыдущему чанку
                 if res_kp_seq_valid_start is None:  # Отрабатывает первый раз
                     # online mode, first chunk
                     res_kp_seq_valid_start = res_kp_seq.shape[1] - self.audio2motion.fuse_length  # 80 - 10 = 70
@@ -787,14 +858,14 @@ class StreamSDK:
                                     self.gen_frame_idx = self.video_segment_info[self.video_segment_current]["start"]
                                     if "vad" in self.video_segment_info[self.video_segment_current]:
                                         vad = self.video_segment_info[self.video_segment_current]["vad"]
-                                        logger.info(f"ASSIGN VAD {vad} TO {self.video_segment_current}")
+                                        logger.debug(f"ASSIGN VAD {vad} TO {self.video_segment_current}")
                                     else:
                                         vad = False
                                     self.seq_video_extractor.seek_to_frame(self.gen_frame_idx)
                                 else:
                                     if self.video_segment_auto_idle:
                                         self.video_segment_current = self.idle_name  # тест анимация за анимацией
-                                        logger.info(f"SWITCH TO IDLE CAUSE AUTO IDLE {self.video_segment_auto_idle}")
+                                        logger.debug(f"SWITCH TO IDLE CAUSE AUTO IDLE {self.video_segment_auto_idle}")
                                     self.gen_frame_idx = self.video_segment_info[self.video_segment_current]["start"]
                                     self.seq_video_extractor.seek_to_frame(self.gen_frame_idx)
                                     vad = False
@@ -813,7 +884,7 @@ class StreamSDK:
                             vad = False
                             frame_idx = _mirror_index(gen_frame_idx, self.source_info_frames)  # ? Индекс кадра
                             ctrl_kwargs = self._get_ctrl_info(gen_frame_idx)  # ? Управляющие параметры
-
+                        logger.trace(f"FRAME_PB IN A2M WORKER: {type(frame_pb)}")
                         while not self.stop_event.is_set():
                             try:
                                 if self.video_exists:
@@ -834,7 +905,8 @@ class StreamSDK:
                                                 "name": self.video_segment_current,
                                                 "event": 1
                                             }))
-                                self.motion_stitch_queue.put(([frame_idx, x_d_info, ctrl_kwargs, frame_pb, vad], is_voice))  # Кладем в очередь обработчика
+                                self.motion_stitch_queue.put(([frame_idx, x_d_info, self.ctrl_kwargs, frame_pb, vad], is_voice))  # Кладем в очередь обработчика
+                                self.timing.point_once("first_audio2motion_out")
                                 if self.video_exists:
                                     self.video_segment_previous = self.video_segment_current
                                 break
@@ -885,6 +957,9 @@ class StreamSDK:
         self.seq_video_extractor.close()
         logger.info("PROCESSES CLOSED")
 
+        # Log timing summary before cleanup
+        self.timing.log_summary(label="INFER")
+
         # try:
         #     self.writer.close()
         #     self.writer_pbar.close()
@@ -898,16 +973,22 @@ class StreamSDK:
         # only for hubert
         # is_voice = False
         # audio_chunk = np.zeros_like(audio_chunk)
+        if not self._inference_start_logged:
+            logger.info("[EVENT] inference_start")
+            self._inference_start_logged = True
+        self.timing.point_once("first_wav2feat_enter")
         if isinstance(audio_chunk, RenderEmotionObject) or isinstance(audio_chunk, RenderAnimationObject):
             self.audio2motion_queue.put(audio_chunk)
         else:
-            aud_feat = self.wav2feat(audio_chunk, chunksize=chunksize)  # aud_feat - audio features через HuBERT
+            with self.timing.measure("inference_wav2feat"):
+                aud_feat = self.wav2feat(audio_chunk, chunksize=chunksize)  # aud_feat - audio features через HuBERT
             while not self.stop_event.is_set():
                 try:
                     if self.first_chunk:
                         self.union_start = time.perf_counter()
                         self.first_chunk = False
                     self.audio2motion_queue.put((aud_feat, is_voice), timeout=1)
+                    self.timing.point_once("first_wav2feat_out")
                     break
                 except queue.Full:
                     continue

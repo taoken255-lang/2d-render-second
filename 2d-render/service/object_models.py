@@ -5,6 +5,7 @@ class IPCDataType(Enum):
 	IMAGE = 1
 	AUDIO = 2
 	COMMAND = 3
+	INTERRUPT = 4
 
 
 class IPCObject:
@@ -17,6 +18,7 @@ class CommandDataType(Enum):
 	SetAvatar = 1
 	PlayAnimation = 2
 	SetEmotion = 3
+	ClearAnimations = 4
 
 
 class CommandObject:
@@ -43,10 +45,11 @@ class ErrorObject:
 
 
 class ImageObject:
-	def __init__(self, data: bytes, height: int, width: int):
+	def __init__(self, data: bytes, height: int, width: int, is_muted: bool = False):
 		self.data = data
 		self.height = height
 		self.width = width
+		self.is_muted = is_muted
 
 
 class AudioObject:
@@ -55,6 +58,11 @@ class AudioObject:
 		self.sample_rate = sample_rate
 		self.bps = bps
 		self.is_voice = is_voice
+
+
+class InterruptObject:
+	def __init__(self):
+		...
 
 
 class EventObject:

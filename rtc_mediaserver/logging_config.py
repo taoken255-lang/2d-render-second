@@ -8,7 +8,7 @@ from .config import settings
 
 
 def setup_logging(
-    level: str = "DEBUG",
+    level: str = settings.default_log_level,
     format_string: Optional[str] = None,
     log_file: Optional[str] = None
 ) -> None:
@@ -58,12 +58,12 @@ def _configure_specific_loggers() -> None:
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
     logging.getLogger("websockets").setLevel(logging.WARNING)
-    logging.getLogger("aiortc").setLevel(logging.INFO)
+    logging.getLogger("aiortc").setLevel(logging.WARNING)
     logging.getLogger("av").setLevel(logging.WARNING)
     logging.getLogger("grpc").setLevel(logging.WARNING)
     
     # Set our application loggers to DEBUG for development
-    logging.getLogger("rtc_mediaserver").setLevel(logging.DEBUG)
+    logging.getLogger("rtc_mediaserver").setLevel(settings.default_log_level)
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -82,6 +82,6 @@ def get_logger(name: str) -> logging.Logger:
 def setup_default_logging() -> None:
     """Setup default logging configuration."""
     setup_logging(
-        level="ERROR",
+        level=settings.default_log_level,
         format_string='%(asctime)s - %(threadName)s - %(levelname)s - %(filename)s:%(funcName)s:%(lineno)d - %(message)s'
     )

@@ -2,6 +2,7 @@ import torch
 from torch import float16, bfloat16, float32
 from loguru import logger
 import numpy as np
+import time
 from torchvision import transforms
 from transformers import AutoModelForImageSegmentation
 from PIL import Image
@@ -28,8 +29,11 @@ class OfflineAlphaService:
         frame = Image.frombytes("RGB", (frame_in.width, frame_in.height), frame_in.data, "raw",
                                     "BGR")
         pred_image = transform_image(frame).unsqueeze(0).to(self.device)
+        infer_start = time.perf_counter()
         with self.autocast_ctx, torch.no_grad():
             preds = self.model(pred_image)[-1].sigmoid().to(float32).cpu()
+        infer_elapsed = time.perf_counter() - infer_start
+        logger.trace(f"[EVENT] inference_birefnet={infer_elapsed:.3f}s")
         pred = preds[0].squeeze()
 
         pred_resized = transforms.functional.resize(

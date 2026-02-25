@@ -59,5 +59,5 @@ class AlphaService:
 
 		bgra = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
 		bgra[:, :, 3] = mask
-		logger.info(type(bgra))
+		logger.debug(type(bgra))
 		return bgra.tobytes()

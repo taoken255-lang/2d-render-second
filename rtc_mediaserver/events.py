@@ -8,6 +8,7 @@ class ServiceEvents(enum.Enum):
     EOS = enum.auto()
     SET_ANIMATION = enum.auto()
     SET_EMOTION = enum.auto()
+    INTERRUPT_ANIMATION = enum.auto()
 
 
 class Conditions:

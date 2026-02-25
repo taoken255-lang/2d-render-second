@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import logging
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 import numpy as np  # type: ignore
 
@@ -15,6 +15,7 @@ from .shared import AUDIO_SECOND_QUEUE, SYNC_QUEUE
 from .tools import fit_chunk
 from .tts.elevenlabs import synthesize
 from .util import _flush_pcm_buf
+from ..config import settings
 from ..events import ServiceEvents
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ async def handle_audio(message: Dict[str, Any], state: ClientState) -> dict:
         state.pcm_buf.clear()
         AUDIO_SECOND_QUEUE.put_nowait((arr, state.sample_rate))
         logger.info("Queued tail audio chunk (%d samples)", arr.shape[0])
+
     if end_flag:
         AUDIO_SECOND_QUEUE.put_nowait((None, None))
 
@@ -110,7 +112,7 @@ async def handle_synthesize_speech(message: Dict[str, Any], state: ClientState) 
             "message": "Avatar is not set."
         }
     text: str = message.get("text", "")
-
+    lang_code: str = message.get("lang_code", settings.elevenlabs_default_lang)
     if not text:
         logger.warning("handle_synthesize_speech received empty text")
         return {
@@ -118,7 +120,7 @@ async def handle_synthesize_speech(message: Dict[str, Any], state: ClientState) 
             "code": "UNKNOWN_ERROR",
             "message": "Unknown error occured."
         }
-    SENTENCES_QUEUE.put_nowait((text, state))
+    SENTENCES_QUEUE.put_nowait((text, lang_code, state))
 
 
 async def handle_set_avatar(message: Dict[str, Any], state: ClientState) -> dict | None:
@@ -258,6 +260,25 @@ async def handle_interrupt(message: Dict[str, Any], state: ClientState) -> dict:
         except Exception:  # noqa: BLE001
             break
     logger.info("Audio queue interrupted and cleared")
+    COMMANDS_QUEUE.put_nowait((ServiceEvents.INTERRUPT, None))
+
+async def handle_interrupt_animation(message: Dict[str, Any], state: ClientState) -> Union[dict, None]:
+    if not INIT_DONE.is_set():
+        return {
+            "type": "error",
+            "code": "NOT_CONNECTED",
+            "message": "Method `connect` should be called first."
+        }
+    if not AVATAR_SET.is_set():
+        return {
+            "type": "error",
+            "code": "AVATAR_IS_NOT_SET",
+            "message": "Avatar is not set."
+        }
+
+    logger.info(f"Interrupting animation")
+    COMMANDS_QUEUE.put_nowait((ServiceEvents.INTERRUPT_ANIMATION, None))
+
 
 # Map message type → handler coroutine
 HANDLERS: Dict[str, Any] = {
@@ -268,5 +289,6 @@ HANDLERS: Dict[str, Any] = {
     "setPanelState": handle_set_panel_state,
     "setEmotion": handle_set_emotion,
     "interrupt": handle_interrupt,
+    "clearAnimations": handle_interrupt_animation,
     "synthesizeSpeech": handle_synthesize_speech
 }

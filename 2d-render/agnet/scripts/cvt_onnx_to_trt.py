@@ -1,28 +1,7 @@
 import os
+import sys
 import torch
-import argparse
-
-
-def onnx_to_trt(onnx_file, trt_file, fp16=False, more_cmd=None):
-    cap = torch.cuda.get_device_capability()
-    if cap[0] >= 8:
-        compatiable = "--hardware-compatibility-level=Ampere_Plus"
-    else:
-        compatiable = ""
-    cmd = [
-        "polygraphy",
-        "convert",
-        onnx_file,
-        "-o",
-        trt_file,
-        compatiable,
-        "--fp16" if fp16 else "",
-        f"--builder-optimization-level=5",
-    ]
-    if more_cmd:
-        cmd = cmd + more_cmd
-    print(" ".join(cmd))
-    os.system(" ".join(cmd))
+from polygraphy.backend.trt import CreateConfig, EngineFromNetwork, NetworkFromOnnxPath, Profile
 
 
 def onnx_to_trt_for_gridsample(onnx_file, trt_file, fp16=False, plugin_file="./libgrid_sample_3d_plugin.so"):
@@ -105,60 +84,138 @@ def onnx_to_trt_for_gridsample(onnx_file, trt_file, fp16=False, plugin_file="./l
             f.write(engineString)
 
 
-def main(onnx_dir, trt_dir, grid_sample_plugin_file=""):
-    names = [i[:-5] for i in os.listdir(onnx_dir) if i.endswith(".onnx")]
-    for name in names:
-        if name == "warp_network_ori":
-            continue
-        
-        print("=" * 20, f"{name} start", "=" * 20)
+def convert_onnx_to_trt(onnx_path, trt_path, fp16=False, optimization_level=3, plugin_file=None):
+    """
+    Convert ONNX model to TensorRT engine using Polygraphy Python API
+    """
+    try:
+        print(f"Converting {onnx_path} to {trt_path}")
 
-        fp16 = False if name in {"motion_extractor", "hubert", "wavlm"} or name.startswith("lmdm") else True
+        # Load plugin if provided
+        if plugin_file and os.path.exists(plugin_file):
+            import tensorrt as trt
+            logger = trt.Logger(trt.Logger.INFO)
+            trt.init_libnvinfer_plugins(logger, "")
+            # Load the plugin library
+            import ctypes
+            ctypes.CDLL(plugin_file)
+            print(f"Loaded plugin: {plugin_file}")
 
-        more_cmd = None
-        if name == "wavlm":
-            more_cmd = [
-                "--trt-min-shapes audio:[1,1000]",
-                "--trt-max-shapes audio:[1,320080]",
-                "--trt-opt-shapes audio:[1,320080]",
-            ]
-        elif name == "hubert":
-            more_cmd = [
-                "--trt-min-shapes input_values:[1,3240]",
-                "--trt-max-shapes input_values:[1,12960]",
-                "--trt-opt-shapes input_values:[1,6480]",
-            ]
+        # Create TensorRT config
+        config = CreateConfig(
+            fp16=fp16,
+            builder_optimization_level=optimization_level
+        )
+
+        # Build the engine
+        engine = EngineFromNetwork(
+            NetworkFromOnnxPath(onnx_path),
+            config=config
+        )
+
+        # Save the engine
+        with open(trt_path, 'wb') as f:
+            f.write(engine().serialize())
+
+        print(f"Successfully converted to {trt_path}")
+        return True
+
+    except Exception as e:
+        print(f"Error during conversion: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
-        onnx_file = f"{onnx_dir}/{name}.onnx"
-        trt_file = f"{trt_dir}/{name}_fp{16 if fp16 else 32}.engine"
+def convert_onnx_to_trt_with_profiles(onnx_path, trt_path, fp16=False, optimization_level=3, profiles=None,
+                                      plugin_file=None):
+    """
+    Convert ONNX model to TensorRT engine using Polygraphy Python API with dynamic profiles
+    """
+    try:
+        print(f"Converting {onnx_path} to {trt_path} with dynamic profiles")
 
-        if os.path.isfile(trt_file):
-            print("=" * 20, f"{name} skip", "=" * 20)
-            continue
+        # Load plugin if provided
+        if plugin_file and os.path.exists(plugin_file):
+            import tensorrt as trt
+            logger = trt.Logger(trt.Logger.INFO)
+            trt.init_libnvinfer_plugins(logger, "")
+            # Load the plugin library
+            import ctypes
+            ctypes.CDLL(plugin_file)
+            print(f"Loaded plugin: {plugin_file}")
 
-        if name == "warp_network":
-            onnx_to_trt_for_gridsample(onnx_file, trt_file, fp16, plugin_file=grid_sample_plugin_file)
-        else:
-            onnx_to_trt(onnx_file, trt_file, fp16, more_cmd=more_cmd)
+        # Create TensorRT config with profiles
+        config = CreateConfig(
+            fp16=fp16,
+            builder_optimization_level=optimization_level,
+            profiles=profiles
+        )
 
-        print("=" * 20, f"{name} done", "=" * 20)
+        # Build the engine
+        engine = EngineFromNetwork(
+            NetworkFromOnnxPath(onnx_path),
+            config=config
+        )
 
+        # Save the engine
+        with open(trt_path, 'wb') as f:
+            f.write(engine().serialize())
+
+        print(f"Successfully converted to {trt_path}")
+        return True
+
+    except Exception as e:
+        print(f"Error during conversion: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 if __name__ == "__main__":
+    onnx_path = "./checkpoints/ditto_onnx/"
+    trt_path = "./checkpoints/ditto_trt_5070_10.13/"
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--onnx_dir", type=str, help="input onnx dir")
-    parser.add_argument("--trt_dir", type=str, help="output trt dir")
-    args = parser.parse_args()
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(trt_path), exist_ok=True)
+    grid_sample_plugin_file = os.path.join(onnx_path, "libgrid_sample_3d_plugin.so")
 
-    onnx_dir = args.onnx_dir
-    trt_dir = args.trt_dir
+    # Check if plugin file exists
+    if not os.path.exists(grid_sample_plugin_file):
+        print(f"Warning: Plugin file not found at {grid_sample_plugin_file}")
+        print("Please build the plugin first or check the path.")
+        grid_sample_plugin_file = None
+    names = [i[:-5] for i in os.listdir(onnx_path) if i.endswith(".onnx")]
+    for name in names:
+        fp16 = False if name in {"motion_extractor", "hubert", "wavlm"} or name.startswith("lmdm") else True
+        onnx_file = f"{onnx_path}/{name}.onnx"
+        trt_file = f"{trt_path}/{name}_fp{16 if fp16 else 32}.engine"
+        if name == "warp_network_ori":
+            continue
+        if os.path.isfile(trt_file):
+            print("=" * 20, f"{name} skip", "=" * 20)
+            continue
+        if name == "hubert":
+            # Create profiles for hubert with dynamic shapes
+            profiles = [
+                Profile().add("input_values", min=(1, 3240), opt=(1, 6480), max=(1, 12960)),
+            ]
+            success = convert_onnx_to_trt_with_profiles(onnx_file, trt_file, fp16=fp16, optimization_level=5,
+                                                        profiles=profiles)
+            if not success:
+                print(f"Failed to convert {name}")
+                continue
+        elif name == "warp_network":
+            onnx_to_trt_for_gridsample(onnx_file, trt_file, fp16, plugin_file=grid_sample_plugin_file)
+        else:
+            # else:
+            # Use the general conversion function
+            success = convert_onnx_to_trt(onnx_file, trt_file, fp16=fp16, optimization_level=5)
+            if not success:
+                print(f"Failed to convert {name}")
+                continue
 
-    assert os.path.isdir(onnx_dir)
-    os.makedirs(trt_dir, exist_ok=True)
 
-    grid_sample_plugin_file = os.path.join(onnx_dir, "libgrid_sample_3d_plugin.so")
-    main(onnx_dir, trt_dir, grid_sample_plugin_file)
+    print("Conversion completed successfully!")
 
+# RUN python3 agnet/scripts/cvt_onnx_to_trt.py FROM /app

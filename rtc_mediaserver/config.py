@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     elevenlabs_voice_speed: float = 1.1
     elevenlabs_type: str = "http"
     elevenlabs_stability: float = 0.87
+    elevenlabs_default_lang: Optional[str] = None
 
     bitrate: int = 16_000_000
 
@@ -63,7 +64,14 @@ class Settings(BaseSettings):
     offline_results_to_keep: int = 10
     offline_avatars: List[str] = ["iirina"]
 
+    turn_enabled: bool = False
+    turn_server: str = "87.242.91.109:19303"
+    turn_login: str = "iiTh7jijiemu"
+    turn_password: str = "aoGheibiaz5u"
+
     fast_interrupts_enabled: bool = False
+
+    default_log_level: str = "INFO"
 
 # Global settings instance
 settings = Settings() 

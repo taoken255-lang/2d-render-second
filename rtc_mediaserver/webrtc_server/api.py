@@ -88,8 +88,7 @@ async def _startup_event() -> None:
     logger.info("gRPC aio worker task created (auto-restart enabled)")
     logger.info("🚀 Isolated WebRTC thread started")
 
-    t1 = asyncio.create_task(synthesize_worker())
-    t2 =  asyncio.create_task(watchdog())
+    wt = asyncio.create_task(watchdog())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -484,6 +483,13 @@ async def control_ws(websocket: WebSocket):  # type: ignore[override]
                 result = await handler(message, state)
                 if isinstance(result, dict):
                     await websocket.send_json(result)
+            except json.JSONDecodeError as exc:
+                logger.exception(f"Error processing WS message - invalid JSON: {data_text}, {exc!r}")
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "INVALID_JSON",
+                    "message": f"'{data_text}' is not valid JSON."
+                })
             except Exception as exc:  # noqa: BLE001
                 logger.exception(f"Error processing WS message, {data_text}, {exc!r}")
                 await websocket.send_json({
@@ -492,7 +498,9 @@ async def control_ws(websocket: WebSocket):  # type: ignore[override]
                   "message": "Unknown error occured."
                 })
     except WebSocketDisconnect as e:
-        logger.info(f"Control websocket disconnected, code: {e.code}, reason: {e.reason}")
+        logger.warning(f"Control websocket disconnected, code: {e.code}, reason: {e.reason}")
+    except BaseException as e:
+        logger.error(f"Control websocket error occured! {e!r}")
     finally:
         eos_watcher.cancel()
         try:

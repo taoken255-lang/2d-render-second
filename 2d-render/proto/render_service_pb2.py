@@ -22,9 +22,10 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 _sym_db = _symbol_database.Default()
 
 
+from . import meta_pb2 as meta__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14render_service.proto\x12\x06Render\"9\n\nImageChunk\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\r\n\x05width\x18\x02 \x01(\r\x12\x0e\n\x06height\x18\x03 \x01(\r\"N\n\nAudioChunk\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\x13\n\x0bsample_rate\x18\x02 \x01(\r\x12\x0b\n\x03\x62ps\x18\x03 \x01(\r\x12\x10\n\x08is_voice\x18\x04 \x01(\x08\"1\n\tSetAvatar\x12\x11\n\tavatar_id\x18\x01 \x01(\t\x12\x11\n\tidle_name\x18\x02 \x01(\t\"5\n\rPlayAnimation\x12\x11\n\tanimation\x18\x01 \x01(\t\x12\x11\n\tauto_idle\x18\x02 \x01(\x08\"\x1d\n\nSetEmotion\x12\x0f\n\x07\x65motion\x18\x01 \x01(\t\"\xb8\x02\n\rRenderRequest\x12!\n\x05image\x18\x01 \x01(\x0b\x32\x12.Render.ImageChunk\x12!\n\x05\x61udio\x18\x02 \x01(\x0b\x32\x12.Render.AudioChunk\x12\x0e\n\x06online\x18\x03 \x01(\x08\x12\r\n\x05\x61lpha\x18\x04 \x01(\x08\x12\'\n\nset_avatar\x18\x05 \x01(\x0b\x32\x11.Render.SetAvatarH\x00\x12/\n\x0eplay_animation\x18\x06 \x01(\x0b\x32\x15.Render.PlayAnimationH\x00\x12)\n\x0bset_emotion\x18\x07 \x01(\x0b\x32\x12.Render.SetEmotionH\x00\x12\x15\n\routput_format\x18\x08 \x01(\t\x12\x1b\n\x13sampling_timestamps\x18\t \x01(\rB\t\n\x07\x63ommand\"(\n\x0eStartAnimation\x12\x16\n\x0e\x61nimation_name\x18\x01 \x01(\t\"&\n\x0c\x45ndAnimation\x12\x16\n\x0e\x61nimation_name\x18\x01 \x01(\t\"\x1e\n\tAvatarSet\x12\x11\n\tavatar_id\x18\x01 \x01(\t\"\"\n\nEmotionSet\x12\x14\n\x0c\x65motion_name\x18\x01 \x01(\t\"9\n\x0cRequestError\x12\x12\n\nerror_type\x18\x01 \x01(\t\x12\x15\n\rerror_message\x18\x02 \x01(\t\"L\n\nVideoChunk\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\r\n\x05width\x18\x02 \x01(\r\x12\x0e\n\x06height\x18\x03 \x01(\r\x12\x11\n\tframe_idx\x18\x04 \x01(\x04\"\xa3\x02\n\x0eRenderResponse\x12#\n\x05video\x18\x01 \x01(\x0b\x32\x12.Render.VideoChunkH\x00\x12\x31\n\x0fstart_animation\x18\x02 \x01(\x0b\x32\x16.Render.StartAnimationH\x00\x12-\n\rend_animation\x18\x03 \x01(\x0b\x32\x14.Render.EndAnimationH\x00\x12\'\n\navatar_set\x18\x04 \x01(\x0b\x32\x11.Render.AvatarSetH\x00\x12)\n\x0b\x65motion_set\x18\x05 \x01(\x0b\x32\x12.Render.EmotionSetH\x00\x12-\n\rrequest_error\x18\x06 \x01(\x0b\x32\x14.Render.RequestErrorH\x00\x42\x07\n\x05\x63hunk\"\r\n\x0bInfoRequest\"\x86\x02\n\x0cInfoResponse\x12\x38\n\nanimations\x18\x01 \x03(\x0b\x32$.Render.InfoResponse.AnimationsEntry\x12\x34\n\x08\x65motions\x18\x02 \x03(\x0b\x32\".Render.InfoResponse.EmotionsEntry\x1a\x43\n\x0f\x41nimationsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1f\n\x05value\x18\x02 \x01(\x0b\x32\x10.Render.ItemList:\x02\x38\x01\x1a\x41\n\rEmotionsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1f\n\x05value\x18\x02 \x01(\x0b\x32\x10.Render.ItemList:\x02\x38\x01\"\x19\n\x08ItemList\x12\r\n\x05items\x18\x01 \x03(\t2\x8b\x01\n\rRenderService\x12\x41\n\x0cRenderStream\x12\x15.Render.RenderRequest\x1a\x16.Render.RenderResponse(\x01\x30\x01\x12\x37\n\nInfoRouter\x12\x13.Render.InfoRequest\x1a\x14.Render.InfoResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x14render_service.proto\x12\x06Render\x1a\nmeta.proto\"9\n\nImageChunk\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\r\n\x05width\x18\x02 \x01(\r\x12\x0e\n\x06height\x18\x03 \x01(\r\"N\n\nAudioChunk\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\x13\n\x0bsample_rate\x18\x02 \x01(\r\x12\x0b\n\x03\x62ps\x18\x03 \x01(\r\x12\x10\n\x08is_voice\x18\x04 \x01(\x08\"1\n\tSetAvatar\x12\x11\n\tavatar_id\x18\x01 \x01(\t\x12\x11\n\tidle_name\x18\x02 \x01(\t\"5\n\rPlayAnimation\x12\x11\n\tanimation\x18\x01 \x01(\t\x12\x11\n\tauto_idle\x18\x02 \x01(\x08\"\x1d\n\nSetEmotion\x12\x0f\n\x07\x65motion\x18\x01 \x01(\t\"\x0b\n\tInterrupt\"\x11\n\x0f\x43learAnimations\"\x95\x03\n\rRenderRequest\x12!\n\x05image\x18\x01 \x01(\x0b\x32\x12.Render.ImageChunk\x12!\n\x05\x61udio\x18\x02 \x01(\x0b\x32\x12.Render.AudioChunk\x12\x0e\n\x06online\x18\x03 \x01(\x08\x12\r\n\x05\x61lpha\x18\x04 \x01(\x08\x12\'\n\nset_avatar\x18\x05 \x01(\x0b\x32\x11.Render.SetAvatarH\x00\x12/\n\x0eplay_animation\x18\x06 \x01(\x0b\x32\x15.Render.PlayAnimationH\x00\x12)\n\x0bset_emotion\x18\x07 \x01(\x0b\x32\x12.Render.SetEmotionH\x00\x12&\n\tinterrupt\x18\n \x01(\x0b\x32\x11.Render.InterruptH\x00\x12\x33\n\x10\x63lear_animations\x18\x0b \x01(\x0b\x32\x17.Render.ClearAnimationsH\x00\x12\x15\n\routput_format\x18\x08 \x01(\t\x12\x1b\n\x13sampling_timestamps\x18\t \x01(\rB\t\n\x07\x63ommand\"(\n\x0eStartAnimation\x12\x16\n\x0e\x61nimation_name\x18\x01 \x01(\t\"&\n\x0c\x45ndAnimation\x12\x16\n\x0e\x61nimation_name\x18\x01 \x01(\t\"\x1e\n\tAvatarSet\x12\x11\n\tavatar_id\x18\x01 \x01(\t\"\"\n\nEmotionSet\x12\x14\n\x0c\x65motion_name\x18\x01 \x01(\t\"\x13\n\x11\x41nimationsCleared\"9\n\x0cRequestError\x12\x12\n\nerror_type\x18\x01 \x01(\t\x12\x15\n\rerror_message\x18\x02 \x01(\t\"^\n\nVideoChunk\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\r\n\x05width\x18\x02 \x01(\r\x12\x0e\n\x06height\x18\x03 \x01(\r\x12\x11\n\tframe_idx\x18\x04 \x01(\x04\x12\x10\n\x08is_muted\x18\x05 \x01(\x08\"\x88\x03\n\x0eRenderResponse\x12#\n\x05video\x18\x01 \x01(\x0b\x32\x12.Render.VideoChunkH\x00\x12\x31\n\x0fstart_animation\x18\x02 \x01(\x0b\x32\x16.Render.StartAnimationH\x00\x12-\n\rend_animation\x18\x03 \x01(\x0b\x32\x14.Render.EndAnimationH\x00\x12\'\n\navatar_set\x18\x04 \x01(\x0b\x32\x11.Render.AvatarSetH\x00\x12)\n\x0b\x65motion_set\x18\x05 \x01(\x0b\x32\x12.Render.EmotionSetH\x00\x12-\n\rrequest_error\x18\x06 \x01(\x0b\x32\x14.Render.RequestErrorH\x00\x12*\n\x08metadata\x18\x07 \x01(\x0b\x32\x16.Render.RenderMetadataH\x00\x12\x37\n\x12\x61nimations_cleared\x18\x08 \x01(\x0b\x32\x19.Render.AnimationsClearedH\x00\x42\x07\n\x05\x63hunk\"\r\n\x0bInfoRequest\"\x86\x02\n\x0cInfoResponse\x12\x38\n\nanimations\x18\x01 \x03(\x0b\x32$.Render.InfoResponse.AnimationsEntry\x12\x34\n\x08\x65motions\x18\x02 \x03(\x0b\x32\".Render.InfoResponse.EmotionsEntry\x1a\x43\n\x0f\x41nimationsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1f\n\x05value\x18\x02 \x01(\x0b\x32\x10.Render.ItemList:\x02\x38\x01\x1a\x41\n\rEmotionsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1f\n\x05value\x18\x02 \x01(\x0b\x32\x10.Render.ItemList:\x02\x38\x01\"\x19\n\x08ItemList\x12\r\n\x05items\x18\x01 \x03(\t2\x8b\x01\n\rRenderService\x12\x41\n\x0cRenderStream\x12\x15.Render.RenderRequest\x1a\x16.Render.RenderResponse(\x01\x30\x01\x12\x37\n\nInfoRouter\x12\x13.Render.InfoRequest\x1a\x14.Render.InfoResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -35,42 +36,48 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_INFORESPONSE_ANIMATIONSENTRY']._serialized_options = b'8\001'
   _globals['_INFORESPONSE_EMOTIONSENTRY']._loaded_options = None
   _globals['_INFORESPONSE_EMOTIONSENTRY']._serialized_options = b'8\001'
-  _globals['_IMAGECHUNK']._serialized_start=32
-  _globals['_IMAGECHUNK']._serialized_end=89
-  _globals['_AUDIOCHUNK']._serialized_start=91
-  _globals['_AUDIOCHUNK']._serialized_end=169
-  _globals['_SETAVATAR']._serialized_start=171
-  _globals['_SETAVATAR']._serialized_end=220
-  _globals['_PLAYANIMATION']._serialized_start=222
-  _globals['_PLAYANIMATION']._serialized_end=275
-  _globals['_SETEMOTION']._serialized_start=277
-  _globals['_SETEMOTION']._serialized_end=306
-  _globals['_RENDERREQUEST']._serialized_start=309
-  _globals['_RENDERREQUEST']._serialized_end=621
-  _globals['_STARTANIMATION']._serialized_start=623
-  _globals['_STARTANIMATION']._serialized_end=663
-  _globals['_ENDANIMATION']._serialized_start=665
-  _globals['_ENDANIMATION']._serialized_end=703
-  _globals['_AVATARSET']._serialized_start=705
-  _globals['_AVATARSET']._serialized_end=735
-  _globals['_EMOTIONSET']._serialized_start=737
-  _globals['_EMOTIONSET']._serialized_end=771
-  _globals['_REQUESTERROR']._serialized_start=773
-  _globals['_REQUESTERROR']._serialized_end=830
-  _globals['_VIDEOCHUNK']._serialized_start=832
-  _globals['_VIDEOCHUNK']._serialized_end=908
-  _globals['_RENDERRESPONSE']._serialized_start=911
-  _globals['_RENDERRESPONSE']._serialized_end=1202
-  _globals['_INFOREQUEST']._serialized_start=1204
-  _globals['_INFOREQUEST']._serialized_end=1217
-  _globals['_INFORESPONSE']._serialized_start=1220
-  _globals['_INFORESPONSE']._serialized_end=1482
-  _globals['_INFORESPONSE_ANIMATIONSENTRY']._serialized_start=1348
-  _globals['_INFORESPONSE_ANIMATIONSENTRY']._serialized_end=1415
-  _globals['_INFORESPONSE_EMOTIONSENTRY']._serialized_start=1417
-  _globals['_INFORESPONSE_EMOTIONSENTRY']._serialized_end=1482
-  _globals['_ITEMLIST']._serialized_start=1484
-  _globals['_ITEMLIST']._serialized_end=1509
-  _globals['_RENDERSERVICE']._serialized_start=1512
-  _globals['_RENDERSERVICE']._serialized_end=1651
+  _globals['_IMAGECHUNK']._serialized_start=44
+  _globals['_IMAGECHUNK']._serialized_end=101
+  _globals['_AUDIOCHUNK']._serialized_start=103
+  _globals['_AUDIOCHUNK']._serialized_end=181
+  _globals['_SETAVATAR']._serialized_start=183
+  _globals['_SETAVATAR']._serialized_end=232
+  _globals['_PLAYANIMATION']._serialized_start=234
+  _globals['_PLAYANIMATION']._serialized_end=287
+  _globals['_SETEMOTION']._serialized_start=289
+  _globals['_SETEMOTION']._serialized_end=318
+  _globals['_INTERRUPT']._serialized_start=320
+  _globals['_INTERRUPT']._serialized_end=331
+  _globals['_CLEARANIMATIONS']._serialized_start=333
+  _globals['_CLEARANIMATIONS']._serialized_end=350
+  _globals['_RENDERREQUEST']._serialized_start=353
+  _globals['_RENDERREQUEST']._serialized_end=758
+  _globals['_STARTANIMATION']._serialized_start=760
+  _globals['_STARTANIMATION']._serialized_end=800
+  _globals['_ENDANIMATION']._serialized_start=802
+  _globals['_ENDANIMATION']._serialized_end=840
+  _globals['_AVATARSET']._serialized_start=842
+  _globals['_AVATARSET']._serialized_end=872
+  _globals['_EMOTIONSET']._serialized_start=874
+  _globals['_EMOTIONSET']._serialized_end=908
+  _globals['_ANIMATIONSCLEARED']._serialized_start=910
+  _globals['_ANIMATIONSCLEARED']._serialized_end=929
+  _globals['_REQUESTERROR']._serialized_start=931
+  _globals['_REQUESTERROR']._serialized_end=988
+  _globals['_VIDEOCHUNK']._serialized_start=990
+  _globals['_VIDEOCHUNK']._serialized_end=1084
+  _globals['_RENDERRESPONSE']._serialized_start=1087
+  _globals['_RENDERRESPONSE']._serialized_end=1479
+  _globals['_INFOREQUEST']._serialized_start=1481
+  _globals['_INFOREQUEST']._serialized_end=1494
+  _globals['_INFORESPONSE']._serialized_start=1497
+  _globals['_INFORESPONSE']._serialized_end=1759
+  _globals['_INFORESPONSE_ANIMATIONSENTRY']._serialized_start=1625
+  _globals['_INFORESPONSE_ANIMATIONSENTRY']._serialized_end=1692
+  _globals['_INFORESPONSE_EMOTIONSENTRY']._serialized_start=1694
+  _globals['_INFORESPONSE_EMOTIONSENTRY']._serialized_end=1759
+  _globals['_ITEMLIST']._serialized_start=1761
+  _globals['_ITEMLIST']._serialized_end=1786
+  _globals['_RENDERSERVICE']._serialized_start=1789
+  _globals['_RENDERSERVICE']._serialized_end=1928
 # @@protoc_insertion_point(module_scope)

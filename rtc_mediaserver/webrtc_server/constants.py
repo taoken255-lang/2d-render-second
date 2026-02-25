@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+from asyncio import AbstractEventLoop
 from pathlib import Path
 
 __all__ = [
@@ -22,10 +23,12 @@ __all__ = [
     "FRAMES_PER_CHUNK",
 ]
 
+from typing import Callable, Coroutine
+
 from aiortc import RTCPeerConnection
 
 from rtc_mediaserver.logging_config import get_logger
-from rtc_mediaserver.webrtc_server.shared import SYNC_QUEUE, SYNC_QUEUE_SEM, AUDIO_SECOND_QUEUE
+from rtc_mediaserver.webrtc_server.shared import SYNC_QUEUE, AUDIO_SECOND_QUEUE
 
 
 class AudioParams:
@@ -114,6 +117,9 @@ class State:
         self.perf_t: float = None
         self.first_call_r = True
         self.first_call_s = True
+        self.video_queue_call_count = 0
+        self.audio_queue_call_count = 0
+        self.synthesize_task: asyncio.Task = None
 
     def kill_streamer(self):
         if self.streamer_task:
@@ -156,18 +162,40 @@ class State:
 
         STATE.first_chunk_received = False
 
+    def force_flush_queues(self):
+        while not SYNC_QUEUE.empty():
+            try:
+                SYNC_QUEUE.get_nowait()
+                SYNC_QUEUE.task_done()
+            except Exception:  # noqa: BLE001
+                break
+
+        while not AUDIO_SECOND_QUEUE.empty():
+            try:
+                AUDIO_SECOND_QUEUE.get_nowait()
+                AUDIO_SECOND_QUEUE.task_done()
+            except Exception:  # noqa: BLE001
+                break
+
+        while not SENTENCES_QUEUE.empty():
+            try:
+                SENTENCES_QUEUE.get_nowait()
+                SENTENCES_QUEUE.task_done()
+            except Exception:  # noqa: BLE001
+                break
+
     def audio_received(self):
         if not self.perf_t:
             self.perf_t = time.time()
 
     def audio_rendered(self):
         if self.perf_t and self.first_call_r:
-            logger.info(f"PERF_T {time.time() - self.perf_t}")
+            logger.debug(f"PERF_T {time.time() - self.perf_t}")
             self.first_call_r = False
 
     def send_to_client(self):
         if self.perf_t and self.first_call_s:
-            logger.info(f"PERF_T {time.time() - self.perf_t}")
+            logger.debug(f"PERF_T {time.time() - self.perf_t}")
             self.first_call_s = False
 
     def zero_perf_timer(self):

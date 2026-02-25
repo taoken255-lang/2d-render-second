@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-import proto.render_service_pb2 as render__service__pb2
+from . import render_service_pb2 as render__service__pb2
 
 GRPC_GENERATED_VERSION = '1.74.0'
 GRPC_VERSION = grpc.__version__
@@ -81,7 +81,7 @@ def add_RenderServiceServicer_to_server(servicer, server):
     server.add_registered_method_handlers('Render.RenderService', rpc_method_handlers)
 
 
- # This class is part of an EXPERIMENTAL API.
+# This class is part of an EXPERIMENTAL API.
 class RenderService(object):
     """Missing associated documentation comment in .proto file."""
 

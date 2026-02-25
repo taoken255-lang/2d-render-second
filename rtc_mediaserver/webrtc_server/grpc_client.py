@@ -88,18 +88,16 @@ async def stream_worker_aio() -> None:
                 is_interrupt = False
 
                 if AUDIO_SECOND_QUEUE.qsize() > 0:
-                    #logger.info(f"AUDIO_SECOND_QUEUE.qsize={AUDIO_SECOND_QUEUE.qsize()}")
                     audio_sec, sr = AUDIO_SECOND_QUEUE.get_nowait()
 
                     if audio_sec is None and sr is None:
-                        logger.info(f"Got EOS marker - gen silence")
+                        logger.debug(f"Got EOS marker - gen silence")
                         if speech_sended:
 
                             speech_sended = False
                             event = ServiceEvents.EOS if not interrupted else ServiceEvents.INTERRUPT
-                            logger.info(f"EVENT push from 1 {event}")
+                            logger.debug(f"EVENT push from 1 {event}")
                         audio_sec, sr = np.zeros(CHUNK_SAMPLES, dtype=np.int16), AUDIO_SETTINGS.sample_rate
-                        #logger.info("AUDIO_SECOND_QUEUE empty. Steady silence – idle state")
                         is_speech = False
                     else:
                         n = audio_sec.shape[0]
@@ -111,14 +109,12 @@ async def stream_worker_aio() -> None:
 
                         speech_sended = True
                         is_speech = True
-                        #logger.info(f"TMR Chunk got after {time.time() - STATE.tts_start}")
                 else:
                     if speech_sended:
                         speech_sended = False
-                        event = ServiceEvents.EOS if not interrupted else ServiceEvents.INTERRUPT
-                        logger.info(f"EVENT push from 2 {event}")
+                        event = None if not interrupted else ServiceEvents.INTERRUPT
+                        logger.debug(f"EVENT push from 2 {event}")
                     audio_sec, sr = np.zeros(CHUNK_SAMPLES, dtype=np.int16), AUDIO_SETTINGS.sample_rate
-                    #logger.info("AUDIO_SECOND_QUEUE empty. Steady silence – idle state")
                     is_speech = False
 
                 pending_audio.append((audio_sec, sr, event, is_speech, is_interrupt))
@@ -133,14 +129,22 @@ async def stream_worker_aio() -> None:
                 while COMMANDS_QUEUE.qsize() > 0 and not SYNTHESIZE_IN_PROGRESS.is_set():
                     evt, evt_payload = COMMANDS_QUEUE.get_nowait()
                     if evt == ServiceEvents.SET_ANIMATION:
-                        logger.info(f"Request -> Playing animation {evt_payload}")
+                        logger.warning(f"Request -> Playing animation {evt_payload}")
                         yield render_service_pb2.RenderRequest(play_animation=render_service_pb2.PlayAnimation(animation=evt_payload, auto_idle=STATE.auto_idle))
                     elif evt == ServiceEvents.SET_EMOTION:
-                        logger.info(f"Request -> set emotion {evt_payload}")
+                        logger.warning(f"Request -> set emotion {evt_payload}")
                         yield render_service_pb2.RenderRequest(
                             set_emotion=render_service_pb2.SetEmotion(emotion=evt_payload))
+                    elif evt == ServiceEvents.INTERRUPT_ANIMATION:
+                        logger.warning(f"Request -> interrupt animation")
+                        yield render_service_pb2.RenderRequest(
+                            clear_animations=render_service_pb2.ClearAnimations())
+                    elif evt == ServiceEvents.INTERRUPT:
+                        logger.warning(f"Request -> interrupt lipsync")
+                        yield render_service_pb2.RenderRequest(
+                            interrupt=render_service_pb2.Interrupt())
 
-                logger.info("Sent audio chunk to render service (pending=%d)",len(pending_audio))
+                logger.debug("Sent audio chunk to render service (pending=%d)",len(pending_audio))
 
                 await asyncio.sleep(0)
 
@@ -157,32 +161,33 @@ async def stream_worker_aio() -> None:
     try:
         t_start = time.time()
         async for chunk in stub.RenderStream(sender_generator()):
-            # if not CAN_SEND_FRAMES.is_set():
-            #     logger.info("No clients - exiting receiver")
-            #     break
             if chunk.WhichOneof("chunk") == "video":
                 STATE.first_chunk_received = True
                 frame_idx = 0
                 try:
                     frame_idx = chunk.video.frame_idx
-                    #logger.info(f"FRAME_RECEIVE:GRPC {frame_idx}")
                 except:
                     pass
+
+                is_muted: bool = False
+
+                try:
+                    is_muted = chunk.video.is_muted
+                except:
+                    pass
+
+                frames_batch.append(((chunk.video.data, chunk.video.width, chunk.video.height), frame_idx))
                 frames += 1
-                img = Image.frombytes("RGB", (chunk.video.width, chunk.video.height), chunk.video.data, "raw")
-                img_np = np.asarray(
-                    img,
-                    np.uint8,
-                )
-                frames_batch.append((img_np, frame_idx))
 
                 if len(frames_batch) == FRAMES_PER_CHUNK:
-                    logger.info(f"Got 15 frames for {time.time() - t_start}, audio pending = {len(pending_audio)}")
+                    if (frame_idx > 1 and frame_idx % 250 == 0) or (frames > 0 and frames % 250 == 0):
+                        logger.info(f"Got {FRAMES_PER_CHUNK} frames for {time.time() - t_start}, total {frames}/{frame_idx} frames")
+
                     if pending_audio:
                         audio_chunk, _sr, event, is_speech, is_interrupt = pending_audio.popleft()
 
-                        #if is_speech:
-                            #logger.info(f"TMR Chunk rendered after {time.time() - STATE.tts_start}")
+                        if is_muted:
+                            audio_chunk = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
 
                         event_to_send = None
                         if event and event == ServiceEvents.EOS:
@@ -192,7 +197,7 @@ async def stream_worker_aio() -> None:
                             USER_EVENTS.put_nowait({"type": "interrupted"})
                             INTERRUPT_CALLED.clear()
                             event_to_send = None
-                            logger.info(f"EVENT Interrupted, event_to_send = None")
+                            logger.debug(f"EVENT Interrupted, event_to_send = None")
 
                         if settings.fast_interrupts_enabled and STATE.chunks_to_skip > 0:
                             STATE.chunks_to_skip =- 1
@@ -200,13 +205,12 @@ async def stream_worker_aio() -> None:
                             if not STATE.chunks_to_skip and INTERRUPT_CALLED.is_set():
                                 INTERRUPT_CALLED.clear()
 
-                        logger.info(f"EVENT {event_to_send}")
+                        logger.debug(f"EVENT {event_to_send}")
                         SYNC_QUEUE.put((audio_chunk, frames_batch.copy(), event_to_send))
 
                         if np.any(audio_chunk):
                             STATE.audio_rendered()
 
-                        #logger.info("SYNC_QUEUE +1 (size=%d)", SYNC_QUEUE.qsize())
                     else:
                         logger.warning("Render service produced %d frames but no matching audio is pending", FRAMES_PER_CHUNK)
                     frames_batch.clear()
@@ -214,27 +218,31 @@ async def stream_worker_aio() -> None:
                     t_start = time.time()
 
                     await asyncio.sleep(0)
+
             elif chunk.WhichOneof("chunk") == "start_animation":
                 USER_EVENTS.put_nowait({"type": "animationStarted", "id": chunk.start_animation.animation_name})
-                logger.info(f"START ANIMATION {chunk.start_animation.animation_name}")
+                logger.debug(f"START ANIMATION {chunk.start_animation.animation_name}")
                 await asyncio.sleep(0)
             elif chunk.WhichOneof("chunk") == "end_animation":
                 USER_EVENTS.put_nowait({"type": "animationEnded", "id": chunk.end_animation.animation_name})
-                logger.info(f"END ANIMATION {chunk.end_animation.animation_name}")
+                logger.debug(f"END ANIMATION {chunk.end_animation.animation_name}")
                 await asyncio.sleep(0)
             elif chunk.WhichOneof("chunk") == "avatar_set":
                 USER_EVENTS.put_nowait({"type": "avatarSet", "avatarId": chunk.avatar_set.avatar_id})
-                logger.info(f"AVATAR SET  {chunk.avatar_set.avatar_id}")
+                logger.debug(f"AVATAR SET  {chunk.avatar_set.avatar_id}")
                 await asyncio.sleep(0)
             elif chunk.WhichOneof("chunk") == "emotion_set":
                 if prev_emotion and prev_emotion != chunk.emotion_set.emotion_name:
                     USER_EVENTS.put_nowait({"type": "emotionEnded", "id": prev_emotion})
                 prev_emotion = chunk.emotion_set.emotion_name
                 USER_EVENTS.put_nowait({"type": "emotionStarted", "id": chunk.emotion_set.emotion_name})
-                logger.info(f"EMOTION SET {chunk.emotion_set.emotion_name}")
+                logger.debug(f"EMOTION SET {chunk.emotion_set.emotion_name}")
+                await asyncio.sleep(0)
+            elif chunk.WhichOneof("chunk") == "animations_cleared":
+                USER_EVENTS.put_nowait({"type": "animationsCleared"})
+                logger.debug(f"Animations cleared")
                 await asyncio.sleep(0)
 
-        # ── flush remaining frames on stream end ────────────────────────
         logger.info("start flushing")
         if frames_batch:
             logger.info("Flushing remaining %d frame(s) after stream end", len(frames_batch))
@@ -253,14 +261,14 @@ async def stream_worker_aio() -> None:
     except BaseException as e:
         logger.exception(e)
         import traceback
-        logger.info(traceback.format_tb(e.__traceback__))
+        logger.error(traceback.format_tb(e.__traceback__))
     finally:
         while not AUDIO_SECOND_QUEUE.empty():
             AUDIO_SECOND_QUEUE.get_nowait()
         while not SYNC_QUEUE.empty():
             SYNC_QUEUE.get_nowait()
 
-        logger.info(f"Queues cleared")
+        logger.warning(f"Queues cleared")
 
         await channel.close()
 
@@ -421,7 +429,7 @@ async def stream_worker_forever() -> None:
         except BaseException as e:
             logger.exception(f"stream_worker_aio crashed {e!r}")
             delay = current_delay + random.uniform(0, current_delay * 0.1)
-            logger.info(f"stream_worker_aio sleep for {delay}s")
+            logger.debug(f"stream_worker_aio sleep for {delay}s")
             await asyncio.sleep(delay)
             retries += 1
             current_delay = min(current_delay * 2, max_delay)

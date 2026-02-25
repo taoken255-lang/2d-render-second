@@ -46,7 +46,7 @@ class SequentialPyAVFrameExtractor:
 		self._width = self.video_stream.width
 		self._height = self.video_stream.height
 
-		logger.info(f"initialize {self._frame_count} f, {self._fps} FPS")
+		logger.info(f"[VIDEO] frames={self._frame_count} avatar_fps={self._fps}")
 		try:
 			codec_ctx = self.video_stream.codec_context
 			codec_ctx.thread_count = 0
@@ -113,6 +113,8 @@ class SequentialPyAVFrameExtractor:
 			return False
 
 	def get_next_frame(self) -> Optional[np.ndarray]:
+		logger.trace(self._current_position)
+		logger.trace(self._frame_count)
 		if not self._initialized or self._current_position >= self._frame_count:
 			return None
 
@@ -125,7 +127,8 @@ class SequentialPyAVFrameExtractor:
 			ndarray = frame.to_ndarray(format='rgb24')
 			self._current_position += 1
 			return ndarray
-		except StopIteration:
+		except StopIteration as e:
+			logger.error(f"STOPITERATION {e}")
 			return None
 		except Exception as e:
 			logger.error(f"{e}")

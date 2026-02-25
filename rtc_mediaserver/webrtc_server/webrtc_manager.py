@@ -5,15 +5,19 @@ import asyncio
 import threading
 import time
 import logging
+from asyncio import AbstractEventLoop
 from concurrent.futures import Future
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from aiortc.rtcrtpsender import RTCRtpSender
 
 from .player import WebRTCMediaPlayer
-from .constants import RTC_STREAM_CONNECTED, CAN_SEND_FRAMES, AVATAR_SET, STATE, State, WS_CONTROL_CONNECTED
+from .constants import RTC_STREAM_CONNECTED, CAN_SEND_FRAMES, AVATAR_SET, STATE, State, WS_CONTROL_CONNECTED, \
+    SENTENCES_QUEUE
+from .shared import AUDIO_SECOND_QUEUE
+from .tts.elevenlabs import start_synthesize_worker, stop_synthesize_worker
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -196,8 +200,21 @@ class WebRTCManager:
         """Обработка WebRTC offer в изолированном потоке"""
         try:
             offer = RTCSessionDescription(sdp=request.sdp, type=request.type)
-            pc = RTCPeerConnection()
-            
+            if not settings.turn_enabled:
+                pc = RTCPeerConnection()
+            else:
+                pc = RTCPeerConnection(
+                    RTCConfiguration(
+                        iceServers=[
+                            RTCIceServer(
+                                urls=f"turn:{settings.turn_server}?transport=tcp",
+                                username=settings.turn_login,
+                                credential=settings.turn_password,
+                            )
+                        ]
+                    )
+                )
+
             # Создаем медиа плеер в WebRTC потоке
             player = WebRTCMediaPlayer()
             player.main_loop = self.main_loop
@@ -275,35 +292,43 @@ class WebRTCManager:
             if pc.connectionState == "connected":
                 if not killer_task.cancelled() and not killer_task.done():
                     killer_task.cancel()
+                logger.info(f"QUEUES STATE CONN: AUDIO_SCQ={AUDIO_SECOND_QUEUE.qsize()}, SENTENCES_QUEUE={SENTENCES_QUEUE.qsize()}")
                 try:
                     await asyncio.wait_for(RTC_STREAM_CONNECTED.acquire(), 60)
                     logger.info(f"🎵 WebRTC peer connected {session_id}")
                     logger.info("🎵 CAN_SEND_FRAMES.set()")
                     CAN_SEND_FRAMES.set()
-                    State.current_session_id = session_id
+                    STATE.current_session_id = session_id
                     STATE.current_pc = pc
+                    STATE.force_flush_queues()
+                    asyncio.run_coroutine_threadsafe(start_synthesize_worker(), self.main_loop)
                 except asyncio.TimeoutError:
                     logger.info(f"🔒 WebRTC peer tried to connect to locked resource {session_id}")
                     await pc.close()
 
-
             elif pc.connectionState in ("failed", "disconnected", "closed"):
                 if not killer_task.cancelled() and not killer_task.done():
                     killer_task.cancel()
-                logger.info(f"🎵 WebRTC peer disconnected {session_id} (state={pc.connectionState})")
-                if session_id == State.current_session_id:
+                logger.info(f"🎵 WebRTC peer disconnected {session_id} csid={STATE.current_session_id} (state={pc.connectionState})")
+                if session_id == STATE.current_session_id:
                     logger.info("🎵 CAN_SEND_FRAMES.clear()")
                     CAN_SEND_FRAMES.clear()
                     if not WS_CONTROL_CONNECTED.locked():
                         AVATAR_SET.clear()
                     STATE.auto_idle = True
                     try:
+                        logger.info(f"RTC_STREAM_CONNECTED.release()")
                         RTC_STREAM_CONNECTED.release()
+                        STATE.current_pc = None
+                        STATE.current_session_id = None
                     except ValueError as e:
                         logger.error(f"RTC_STREAM_CONNECTED.release() -> {e!r}")
+                    stop_result = asyncio.run_coroutine_threadsafe(stop_synthesize_worker(), self.main_loop)
+                    await asyncio.wrap_future(stop_result)
                     STATE.kill_streamer()
+
                 await pc.close()
-    
+
     async def process_offer_async(self, offer_data: Dict[str, Any]) -> Dict[str, Any]:
         """Публичный метод для обработки offer из FastAPI потока"""
         if not self.running or not self.webrtc_loop:

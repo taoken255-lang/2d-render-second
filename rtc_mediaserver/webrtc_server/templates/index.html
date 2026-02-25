@@ -133,6 +133,7 @@
         <button id="setAvatarBtn" onclick="sendSetAvatar()" disabled>Set Avatar (id=default)</button>
         <button id="playAnimationBtn" onclick="sendPlayAnimation()" disabled>Play Animation (id=default)</button>
         <button id="setEmotionBtn" onclick="sendSetEmotion()" disabled>Set Emotion (id=default)</button>
+        <button id="interruptAnimationBtn" onclick="sendInterruptAnimation()" disabled>Interrupt Animations</button>
     </div>
 
     <div style="margin-top: 15px;">
@@ -157,7 +158,7 @@ const S = id => document.getElementById(id);
 
 const addLog = msg => {
     const log = S('log');
-    const ts = new Date().toLocaleTimeString();
+    const ts = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
     log.innerHTML += `[${ts}] ${msg}\n`;
     log.scrollTop = log.scrollHeight;
 };
@@ -325,6 +326,19 @@ async function connectWebRTC() {
         status('Connecting WebRTC');
         setBtns({rtc: true});
         pc = new RTCPeerConnection();
+        // pc = new RTCPeerConnection({
+        //   iceServers: [
+        //     {
+        //       urls: [
+        //         'turn:87.242.91.109:19303?transport=tcp',
+        //       ],
+        //       username: 'iiTh7jijiemu',
+        //       credential: 'aoGheibiaz5u',
+        //     }
+        //   ],
+        //   // Рекомендуется, если ты хочешь гарантированно только через TURN:
+        //   iceTransportPolicy: 'relay',
+        // });
         pc.addTransceiver('audio', {direction: 'recvonly'});
         pc.addTransceiver('video', {direction: 'recvonly'});
         pc.ontrack = e => {
@@ -484,6 +498,12 @@ function sendPlayAnimation() {
     status('playAnimation sent');
     addLog('playAnimation sent');
     // keep audio button enabled to continue? Up to spec keep enabled
+}
+
+function sendInterruptAnimation() {
+    ws.send(JSON.stringify({type: 'clearAnimations'}));
+    status('interruptAnimation sent');
+    addLog('interruptAnimation sent');
 }
 
 
