@@ -19,7 +19,7 @@ from agnet.core.atomic_components.video_frame_extractor import SequentialPyAVFra
 from agnet.core.atomic_components.wav2feat import Wav2Feat
 from agnet.core.atomic_components.cfg import parse_cfg, print_cfg
 
-from service.object_models import EventObject, RenderEmotionObject, RenderAnimationObject
+from service.object_models import EventObject, RenderEmotionObject, RenderAnimationObject, InterruptState
 from service.progress.timing import TimingTracker
 from config import Config
 
@@ -118,6 +118,8 @@ class StreamSDK:
 
         self.seq_video_extractor = SequentialPyAVFrameExtractor()
         self.stop_event = threading.Event()
+
+        self.interrupt_state = InterruptState()
 
     def add_video_segment(self, video_segment_name: str):
         """
@@ -418,13 +420,6 @@ class StreamSDK:
         logger.info(f"EMOTIONS: {self.emotion_exists}")
         self.timing.point("setup_end")
 
-    def interrupt(self):
-        """
-        Soft interrupt: force mouth to close without dropping frames.
-        Sets force_silence flag to override is_voice for all frames.
-        """
-        logger.info("INTERRUPT: enabling force_silence mode")
-        self.force_silence = True
 
     def setup_emotions(self, emotions_path: str):
         emotions_info_path = f"{emotions_path}/info.json"
@@ -485,11 +480,6 @@ class StreamSDK:
         self.video_segment_current = self.idle_name
         self.video_segment_auto_idle = True
         self.video_segment_previous = ""
-
-        # Soft interrupt: force silence without clearing queues
-        self.force_silence = False
-        # Per-frame muted state queue, filled by _motion_stitch_worker, consumed by stream_frames
-        self.muted_frames_queue = queue.Queue()
 
         # Handle global gen frame index
         self.gen_frame_idx = self.video_segment_info[self.idle_name]["start"]
@@ -574,7 +564,7 @@ class StreamSDK:
                 self.writer_queue.put(None)
                 # logger.info(pb_res_time_list)
                 break
-            frame_idx, render_img, frame_pb, is_alpha = item
+            frame_idx, render_img, frame_pb, is_alpha, is_muted = item
             # frame_rgb = self.si_img_rgb_list[frame_idx]
             if self.video_exists:
                 frame_rgb = frame_pb
@@ -583,7 +573,7 @@ class StreamSDK:
             M_c2o = self.si_M_c2o_lst[frame_idx]
             logger.trace(f"FRAME_PB IN PB WORKER: {type(frame_pb)}")
             res_frame_rgb = self.putback(frame_rgb, render_img, M_c2o)
-            self.writer_queue.put(res_frame_rgb)
+            self.writer_queue.put((res_frame_rgb, is_muted))
             # pb_res_time_list.append(time.perf_counter() - self.union_start)
 
     def decode_f3d_worker(self):
@@ -612,7 +602,7 @@ class StreamSDK:
                 self.putback_queue.put(None)
                 # logger.info(df3d_res_time_list)
                 break
-            frame_idx, f_3d, frame_pb, is_alpha = item
+            frame_idx, f_3d, frame_pb, is_alpha, is_muted = item
             # TODO: clean old commented logs
             # start = time.perf_counter()
             # logger.info("------------------------ DECODOE F3D START ------------------------")
@@ -622,7 +612,7 @@ class StreamSDK:
             # logger.info(f"------------------------ DECODOE F3D END {end-start} ------------------------")
             # logger.info("PUTBACK QUEUE PUT")
             self.timing.point_once("first_decode_f3d_out")
-            self.putback_queue.put([frame_idx, render_img, frame_pb, is_alpha])
+            self.putback_queue.put([frame_idx, render_img, frame_pb, is_alpha, is_muted])
             # df3d_res_time_list.append(time.perf_counter() - self.union_start)
 
     def warp_f3d_worker(self):
@@ -651,7 +641,7 @@ class StreamSDK:
                 self.decode_f3d_queue.put(None)
                 # logger.info(wf3d_res_time_list)
                 break
-            frame_idx, x_s, x_d, frame_pb, is_alpha = item
+            frame_idx, x_s, x_d, frame_pb, is_alpha, is_muted = item
             f_s = self.si_f_s_lst[frame_idx]
             if self.video_exists:
                 f_s = f_s.to(torch.float32).numpy()
@@ -664,7 +654,7 @@ class StreamSDK:
             # logger.info(f"---------------- WARP F3D END {end-start} ----------------")
             # logger.info("DECODE F3D QUEUE PUT")
             self.timing.point_once("first_warp_f3d_out")
-            self.decode_f3d_queue.put([frame_idx, f_3d, frame_pb, is_alpha])
+            self.decode_f3d_queue.put([frame_idx, f_3d, frame_pb, is_alpha, is_muted])
             # wf3d_res_time_list.append(time.perf_counter() - self.union_start)
 
     def motion_stitch_worker(self):
@@ -705,16 +695,13 @@ class StreamSDK:
                 if vad:
                     ctrl_kwargs["is_voice"] = False
 
-            # Force silence on interrupt: override is_voice and use softer silence params
-            is_muted = self.force_silence
-            if self.force_silence:
+            self.interrupt_state.advance_ms()
+            is_muted = self.interrupt_state.is_muted()
+            if is_muted:
                 ctrl_kwargs["is_voice"] = False
-                ctrl_kwargs["silence_threshold"] = 0  # Start immediately
-                ctrl_kwargs["silence_transition_frames"] = 10  # Smooth 400ms transition
-                ctrl_kwargs["silence_alpha"] = 0.0  # Full mute
-
-            # Record per-frame muted state for stream_frames_thread
-            self.muted_frames_queue.put(is_muted)
+                ctrl_kwargs["silence_threshold"] = 0
+                ctrl_kwargs["silence_transition_frames"] = 10
+                ctrl_kwargs["silence_alpha"] = 0.0
 
             x_s_info = self.si_x_s_info_lst[frame_idx]  # Данные по картинке - ? motion extractor по кадру (? кадр 1 для картинки
             if not self.emotion_exists:
@@ -763,7 +750,7 @@ class StreamSDK:
             # logger.info(f"-------- MOTION STITCH END {end-start} --------")
             # logger.info("WARP F3D QUEUE PUT")
             self.timing.point_once("first_motion_stitch_out")
-            self.warp_f3d_queue.put([frame_idx, x_s, x_d, frame_pb, is_alpha])
+            self.warp_f3d_queue.put([frame_idx, x_s, x_d, frame_pb, is_alpha, is_muted])
             # ms_res_time_list.append(time.perf_counter() - self.union_start)
 
     def audio2motion_worker(self):

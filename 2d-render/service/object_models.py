@@ -1,4 +1,5 @@
 from enum import Enum
+from loguru import logger
 
 
 class IPCDataType(Enum):
@@ -79,3 +80,29 @@ class RenderAnimationObject:
 class RenderEmotionObject:
 	def __init__(self, render_data):
 		self.render_data = render_data
+
+
+class InterruptState:
+	"""
+	Single source of truth for interrupt audio position tracking.
+	All counters are in audio samples (640 samples = 1 output frame).
+	"""
+	SAMPLES_PER_FRAME = 640
+
+	def __init__(self):
+		self._threshold = -1
+		self._audio_fed = 0
+		self._ms_consumed = 0
+
+	def feed(self, samples: int):
+		self._audio_fed += samples
+
+	def interrupt(self):
+		self._threshold = self._audio_fed
+		logger.info(f"INTERRUPT: threshold={self._threshold}")
+
+	def advance_ms(self):
+		self._ms_consumed += self.SAMPLES_PER_FRAME
+
+	def is_muted(self) -> bool:
+		return self._threshold >= 0 and self._ms_consumed <= self._threshold

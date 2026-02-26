@@ -163,7 +163,7 @@ def stream_frames_thread(render, video_queue, height, width, start_time, request
 		# good_chunks = 0
 		# bad_chunks = 0
 		# gb_info = ""
-		for frame in render.sdk.stream_frames():
+		for item in render.sdk.stream_frames():
 			# if not dt_first_chunk_flag:  # первый чанк
 			# 	dt_first_cur_time = time.perf_counter()
 
@@ -177,10 +177,11 @@ def stream_frames_thread(render, video_queue, height, width, start_time, request
 			# 	dt_full_time += dt_chunk_time
 			# 	dt_chunk_counter += 1
 			# start_time.value = render.start_time
-			if isinstance(frame, EventObject):
-				video_queue.put(frame)
+			if isinstance(item, EventObject):
+				video_queue.put(item)
 				continue
-			
+
+			frame, is_muted = item
 			if first_frame_time is None:
 				first_frame_time = time.perf_counter()
 			realtime_metric = (time.perf_counter() - first_frame_time) - frame_idx * every_frame_time
@@ -191,11 +192,6 @@ def stream_frames_thread(render, video_queue, height, width, start_time, request
 			elif frame_idx % 100 == 0:
 				# TRACE: progress every 100 frames (4s at 25fps) - for debugging only
 				logger.trace(f"[EVENT] frame_ready frame_idx={frame_idx} realtime_metric={realtime_metric:.3f}s")
-			# Read per-frame muted state recorded by _motion_stitch_worker
-			try:
-				is_muted = render.sdk.muted_frames_queue.get_nowait()
-			except Exception:
-				is_muted = render.sdk.force_silence
 			video_queue.put(ImageObject(data=frame, height=height, width=width, is_muted=is_muted))
 			frame_idx += 1
 		# dt_start_time = dt_cur_time
@@ -223,7 +219,6 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 		render = None
 		stream_thread = None
 		infer_start_sent = False
-		post_interrupt = False
 
 		# Wall-clock stage points are forwarded to the main process for an authoritative per-request timeline.
 		def send_wall_point(point_name: str):
@@ -294,12 +289,6 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 						render.sdk.timing.reset_clock(clear_points=True)
 					infer_start_sent = True
 
-				# Clear force_silence when new speech arrives after interrupt
-				if post_interrupt and chunk.data.is_voice:
-					logger.info("RESUME: new speech after interrupt, clearing force_silence")
-					render.sdk.force_silence = False
-					post_interrupt = False
-
 				try:
 					render_stream(chunk=chunk, render=render)
 				except Exception as e:
@@ -311,7 +300,6 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 				# INFO: rare event (max 1 per request), important state change
 				logger.info("RECEIVE INTERRUPT")
 				render.interrupt()
-				post_interrupt = True
 
 			elif chunk.data_type == IPCDataType.COMMAND:
 				# INFO: rare event, explicit user action

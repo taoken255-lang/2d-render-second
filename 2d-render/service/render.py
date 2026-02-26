@@ -72,7 +72,7 @@ class RenderService:
 		self.sdk.clear_animations()
 
 	def interrupt(self):
-		self.sdk.interrupt()
+		self.sdk.interrupt_state.interrupt()
 
 	def handle_image(self, image_chunk, video_queue: Queue):
 		try:
@@ -178,6 +178,7 @@ class RenderService:
 			if self.chunks_rx <= 5:
 				logger.info(f"[TIMING] [AUDIO] decode_ms={decode_ms:.1f} chunk_bytes={len(audio_chunk)} samples={len(audio)}")
 			self.audio_buffer = np.append(self.audio_buffer, audio)
+			self.sdk.interrupt_state.feed(len(audio))
 			# logger.info(f"PUT AUDIO IN BUFFER 16K AUDIO: {len(audio)} BUFFER: {len(self.audio_buffer)}")
 
 		if len(self.animation_to_play) > 0:
