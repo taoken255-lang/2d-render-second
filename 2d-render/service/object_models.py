@@ -105,4 +105,4 @@ class InterruptState:
 		self._ms_consumed += self.SAMPLES_PER_FRAME
 
 	def is_muted(self) -> bool:
-		return self._threshold >= 0 and self._ms_consumed <= self._threshold
+		return self._threshold >= 0 and self._ms_consumed < self._threshold

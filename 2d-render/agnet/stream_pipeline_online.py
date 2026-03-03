@@ -695,8 +695,8 @@ class StreamSDK:
                 if vad:
                     ctrl_kwargs["is_voice"] = False
 
-            self.interrupt_state.advance_ms()
             is_muted = self.interrupt_state.is_muted()
+            self.interrupt_state.advance_ms()
             if is_muted:
                 ctrl_kwargs["is_voice"] = False
                 ctrl_kwargs["silence_threshold"] = 0
