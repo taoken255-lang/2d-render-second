@@ -92,7 +92,14 @@ class AvatarRegistrar:
             motion_extractor_cfg,
         )
         self.cache_dir = "/app/cache"
-        # os.makedirs(self.cache_dir, exist_ok=True)
+        cache_dir_was_missing = not os.path.isdir(self.cache_dir)
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+        except OSError:
+            logger.exception(f"Failed to create cache dir '{self.cache_dir}'")
+            raise
+        if cache_dir_was_missing:
+            logger.info(f"Created cache dir '{self.cache_dir}'")
 
     def _get_cache_key(self, source_path):
         h = hashlib.md5()
@@ -177,9 +184,13 @@ class AvatarRegistrar:
             )
             logger.info("NPY SAVED")
             source_info["f_s_lst"] = f_s_lst
-
-        except Exception as e:
-            print(f"Failed to save cache: {e}")
+        except (OSError, ValueError, pickle.PickleError):
+            logger.exception(
+                "Failed to save cache '{}' / '{}'",
+                full_pkl_path,
+                full_npy_path,
+            )
+            raise
 
     def register(
             self,

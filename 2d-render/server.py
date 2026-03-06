@@ -42,7 +42,7 @@ elif Config.LOG_LEVEL == "WARNING":
 elif Config.LOG_LEVEL == "ERROR":
 	logger.add(
 		sys.stdout,
-		format="{time} | {level} | {extra[request_id]} | {name}:{function}:{line} - {message}:{exception}",
+		format="{time} | {level} | {extra[request_id]} | {name}:{function}:{line} - {message}",
 		level="ERROR",
 		backtrace=True,
 		diagnose=True
