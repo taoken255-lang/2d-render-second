@@ -181,7 +181,7 @@ def ffmpeg_av_pipe(output_path: str, width: int, height: int, fps: int,
         cmd,
         stdin=subprocess.PIPE,
         pass_fds=(r_audio,),   # пробрасываем fd в ffmpeg
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
         bufsize=frame_bytes,
         close_fds=False,
     )
@@ -190,12 +190,12 @@ def ffmpeg_av_pipe(output_path: str, width: int, height: int, fps: int,
 
     audio_pipe = os.fdopen(w_audio, "wb", buffering=0)
 
-    # def _drain_stderr(p):
-    #     for line in p.stderr:
-    #         logger.warning("[ffmpeg] %s", line.rstrip())
-    #
-    # t = threading.Thread(target=_drain_stderr, args=(proc,), daemon=True)
-    # t.start()
+    def _drain_stderr(p):
+        for line in p.stderr:
+            logger.warning("[ffmpeg] %s", line.rstrip())
+
+    t = threading.Thread(target=_drain_stderr, args=(proc,), daemon=True)
+    t.start()
 
     try:
         yield proc, frame_bytes, audio_pipe
