@@ -143,7 +143,7 @@ def ffmpeg_av_pipe(output_path: str, width: int, height: int, fps: int,
         "ffmpeg",
         "-hide_banner", "-loglevel", "verbose",
         "-y",
-        #"-report",
+        "-report",
         "-stats",
         "-debug_ts",
 
@@ -181,7 +181,7 @@ def ffmpeg_av_pipe(output_path: str, width: int, height: int, fps: int,
         cmd,
         stdin=subprocess.PIPE,
         pass_fds=(r_audio,),   # пробрасываем fd в ffmpeg
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         bufsize=frame_bytes,
         close_fds=False,
     )
@@ -190,12 +190,12 @@ def ffmpeg_av_pipe(output_path: str, width: int, height: int, fps: int,
 
     audio_pipe = os.fdopen(w_audio, "wb", buffering=0)
 
-    def _drain_stderr(p):
-        for line in p.stderr:
-            logger.warning("[ffmpeg] %s", line.rstrip())
-
-    t = threading.Thread(target=_drain_stderr, args=(proc,), daemon=True)
-    t.start()
+    # def _drain_stderr(p):
+    #     for line in p.stderr:
+    #         logger.warning("[ffmpeg] %s", line.rstrip())
+    #
+    # t = threading.Thread(target=_drain_stderr, args=(proc,), daemon=True)
+    # t.start()
 
     try:
         yield proc, frame_bytes, audio_pipe
@@ -225,8 +225,6 @@ async def local_video_run(audio: bytes, sample_rate: int, bps: int, avatar_id: s
     if not output_path.exists():
         output_path.mkdir(exist_ok=True, parents=True)
     logger.info(f"Output path: {output_path}")
-    frames_path = output_path / "frames"
-    frames_path.mkdir(parents=True, exist_ok=True)
 
     channel = create_aio_channel()
     stub = render_service_pb2_grpc.RenderServiceStub(channel)
@@ -240,67 +238,52 @@ async def local_video_run(audio: bytes, sample_rate: int, bps: int, avatar_id: s
     video_path = output_path / "video.mp4"
 
     img_idx = 0
-    img_w = 0
-    img_h = 0
-    frames = []
-    async for idxa, response_chunk in aenumerate(response_stream):
-        logger.info(f"CHUNK {idxa}")
-        if response_chunk.WhichOneof("chunk") == "video":
+    pipe_ctx = None
+    proc = None
+    aout = None
+    frame_size = 0
+    audio_errors = []
+    audio_thread = None
+
+    try:
+        async for idxa, response_chunk in aenumerate(response_stream):
+            logger.info(f"CHUNK {idxa}")
+            if response_chunk.WhichOneof("chunk") != "video":
+                continue
+
+            frame = response_chunk.video.data
             logger.info(f"RECV IMAGE {img_idx} {response_chunk.video.width}x{response_chunk.video.height}")
 
-            if not img_h and not img_w:
-                img_h = response_chunk.video.height
-                img_w = response_chunk.video.width
+            if pipe_ctx is None:
+                logger.info("Start writing to pipe")
+                pipe_ctx = ffmpeg_av_pipe(
+                    str(video_path),
+                    response_chunk.video.width,
+                    response_chunk.video.height,
+                    25,
+                    audio_fmt=audio_fmt,
+                    audio_sr=sample_rate,
+                )
+                proc, frame_size, aout = pipe_ctx.__enter__()
 
-            frames.append(response_chunk.video.data)
+                def _audio_writer():
+                    try:
+                        _write_all(aout, audio)
+                    except Exception as exc:  # noqa: BLE001
+                        audio_errors.append(exc)
+                    finally:
+                        try:
+                            aout.close()
+                        except Exception:
+                            pass
 
-            img_idx += 1
+                audio_thread = threading.Thread(target=_audio_writer, daemon=True, name="ffmpeg-audio-writer")
+                audio_thread.start()
+                logger.info("frame_size expected=%d", frame_size)
 
-    logger.info(f"Start writing to pipe")
-    with ffmpeg_av_pipe(
-            str(video_path),
-            img_w,
-            img_h,
-            25,
-            audio_fmt=audio_fmt,
-            audio_sr=sample_rate) as (proc, frame_size, aout):
-        bytes_per_sample = max(1, bps // 8)
-        audio_step = int((sample_rate * bytes_per_sample) / 25)
-        logger.info(f"Audio step {audio_step}")
-
-        need_bytes = len(frames) * audio_step
-        had_bytes = len(audio)
-        logger.info(f"Need audio={need_bytes}, total_audio={had_bytes}")
-        if need_bytes > had_bytes:
-            audio = audio.ljust(need_bytes, b'\x00')
-            logger.info(f"Filled audio with {need_bytes - had_bytes} bytes")
-        elif had_bytes > need_bytes:
-            audio = audio[:need_bytes]
-            logger.info(f"Trimmed audio by {had_bytes - need_bytes} bytes")
-
-        audio_errors = []
-
-        def _audio_writer():
-            try:
-                _write_all(aout, audio)
-            except Exception as exc:  # noqa: BLE001
-                audio_errors.append(exc)
-            finally:
-                try:
-                    aout.close()
-                except Exception:
-                    pass
-
-        audio_thread = threading.Thread(target=_audio_writer, daemon=True, name="ffmpeg-audio-writer")
-        audio_thread.start()
-
-        logger.info("frame_size expected=%d", frame_size)
-        logger.info("first frame len=%d", len(frames[0]) if frames else -1)
-        for idx, frame in enumerate(frames):
-            logger.info(f"Write {idx}/{len(frames)} frame")
-
+            logger.info(f"Write frame {img_idx}")
             if len(frame) != frame_size:
-                logger.error("BAD FRAME SIZE idx=%d got=%d expected=%d", idx, len(frame), frame_size)
+                logger.error("BAD FRAME SIZE idx=%d got=%d expected=%d", img_idx, len(frame), frame_size)
                 raise RuntimeError("frame size mismatch: not raw rgb24 frame")
 
             proc.stdin.write(frame)
@@ -309,15 +292,23 @@ async def local_video_run(audio: bytes, sample_rate: int, bps: int, avatar_id: s
                 logger.error(f"ffmpeg died with return code {proc.returncode}")
                 raise RuntimeError("ffmpeg died")
 
-        if proc.stdin:
-            proc.stdin.close()
+            img_idx += 1
 
-        audio_thread.join()
+        if pipe_ctx is None:
+            raise RuntimeError("no video frames received from render stream")
+
+        if proc and proc.stdin:
+            proc.stdin.close()
+            proc.stdin = None
+
+        if audio_thread:
+            audio_thread.join()
         if audio_errors:
             raise RuntimeError(f"audio writer failed: {audio_errors[0]}")
+    finally:
+        if pipe_ctx is not None:
+            pipe_ctx.__exit__(None, None, None)
 
-    shutil.rmtree(frames_path)
-    logger.info(f"Frames in path {frames_path} are deleted")
     await cleanup_old_results()
     logger.info(f"Old results cleared")
 
