@@ -1,7 +1,7 @@
-from multiprocessing import Queue as mQueue, Process, Value
+from multiprocessing import Value
 from threading import Event, Thread, Lock
 from queue import Queue as tQueue
-from grpc import RpcError
+from grpc import RpcError, StatusCode
 from config import Config
 from loguru import logger
 from uuid import uuid4
@@ -212,11 +212,11 @@ def stream_frames_thread(render, video_queue, height, width, start_time, request
 	# logger.info(time_chunks_list)
 
 
-def start_render_process(audio_queue, video_queue, start_time, sampling_timestamps, request_id):
+def start_render_process(audio_queue, video_queue, start_time, sampling_timestamps, request_id, render_instance=None):
 	with logger.contextualize(request_id=request_id):
 		# gc.disable()
 		waiting_init = True
-		render = None
+		render = render_instance
 		stream_thread = None
 		infer_start_sent = False
 
@@ -243,7 +243,10 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 					video_queue.put(ErrorObject(error_type=ErrorDataType.Handling, error_message=message))
 					return
 				send_wall_point("loading_start")
-				render = RenderService(is_online=chunk["is_online"], sampling_timestamps=sampling_timestamps.value, video_queue=video_queue)
+				if render is None:
+					render = RenderService(is_online=chunk["is_online"], sampling_timestamps=sampling_timestamps.value, video_queue=video_queue)
+				else:
+					render.prepare_session(is_online=chunk["is_online"], sampling_timestamps=sampling_timestamps.value)
 				send_wall_point("loading_end")
 				waiting_init = False
 				continue
@@ -612,276 +615,292 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 		self.alpha_service = alpha_service
 		self.critical_exceptions = [ErrorDataType.Initialization]
 		self.important_exceptions = [ErrorDataType.Handling]
+		self.render_lock = Lock()
+		self.shared_render = None
+
+	def _get_shared_render(self, video_queue):
+		if self.shared_render is None:
+			self.shared_render = RenderService(video_queue=video_queue, is_online=False, sampling_timestamps=0)
+		return self.shared_render
 
 	def RenderStream(self, request_iterator, context):
 		request_id = str(uuid4())
 		frame_idx = 0
 		with logger.contextualize(request_id=request_id):
-			audio_queue = mQueue()
-			# audio_queue
-			video_queue = mQueue()
-			local_queue = tQueue()
-			# local_queue
-			is_online = Event()
-			is_alpha = Event()
-			output_format = SharedValue("")
-			sampling_timestamps = Value('d', 0)
-			audio_ms_total = Value('d', 0.0)
-			full_start_time = Value('d', 0.0)
-			full_start_time.value = time.perf_counter()
-			t_wall = TimingTracker(enabled=True, log_each=False)
-			t_wall.point_ms("req_start", 0.0)
-			# full_times_list = []
-			render_process = Process(target=start_render_process,
-			                         args=(audio_queue, video_queue, full_start_time, sampling_timestamps, request_id))
-			render_process.start()
-
-			# Progress tracking
-			# Offline mode: expects full audio in single chunk (server splits internally)
-			# If multi-chunk offline needed, accumulate total_frames in reader_thread
-			progress_tracker = ProgressTracker(
-				emit_interval=TARGET_FPS,
-				is_online=is_online.is_set(),
-				total_frames=0,
-			)
-
-			reader_trd = Thread(target=reader_thread, args=(
-				request_iterator, audio_queue, video_queue, is_online, is_alpha, output_format, sampling_timestamps, request_id, context, progress_tracker, audio_ms_total))
-			reader_trd.start()
-
-			mqueue_trd = Thread(target=get_mqueue_thread,
-			                              args=(video_queue, local_queue, is_alpha, output_format, self.alpha_service,
-			                                    request_id,))
-			mqueue_trd.start()
-
-			first_chunk_flag = False
-			# first_img_flag = True
-			# full_time = 0
-			# min_time = 1000
-			# max_time = 0
-			# chunk_counter = 0
-			avatar_sent_mem = None
-			avatar_id = None
-			# Track frame dimensions for VideoChunk (fallback if frame.width/height is None)
-			tracked_width = None
-			tracked_height = None
-			frames_sent = 0
-			bytes_sent = 0
-			queue_wait_total_ms = 0.0
-			queue_wait_max_ms = 0.0
-			queue_get_count = 0
-			stream_started = False  # only track queue waits after first frame sent
-			grpc_gap_max_ms = 0.0
-			prev_video_send_time = None
-			first_send_ms = None
-			stream_end_ms = None
-
-			first_frame_time = None
-			every_frame_time = 1 / TARGET_FPS
-			realtime_metric = 0
-
+			if not self.render_lock.acquire(blocking=False):
+				logger.warning("REJECT REQUEST: renderer is busy")
+				context.set_code(StatusCode.RESOURCE_EXHAUSTED)
+				context.set_details("Renderer is busy with another request. Retry later.")
+				return
 			try:
-				while True:
-					queue_get_start = time.perf_counter()
-					frame = local_queue.get()
-					# only track queue waits after stream started (skip TTFF wait)
-					if stream_started:
-						queue_wait_ms = (time.perf_counter() - queue_get_start) * 1000
-						queue_wait_total_ms += queue_wait_ms
-						if queue_wait_ms > queue_wait_max_ms:
-							queue_wait_max_ms = queue_wait_ms
-						queue_get_count += 1
-					logger.trace("CHUNK LAST -> OUTPUT")
-					if isinstance(frame, EventObject):
-						if frame.event_name == "wall_point":
-							point_name = frame.event_data.get("name")
-							elapsed_ms = frame.event_data.get("elapsed_ms")
-							if point_name and elapsed_ms is not None:
-								t_wall.point_once_ms(point_name, float(elapsed_ms))
+				audio_queue = tQueue()
+				video_queue = tQueue()
+				local_queue = tQueue()
+				# local_queue
+				is_online = Event()
+				is_alpha = Event()
+				output_format = SharedValue("")
+				sampling_timestamps = Value('d', 0)
+				audio_ms_total = Value('d', 0.0)
+				full_start_time = Value('d', 0.0)
+				full_start_time.value = time.perf_counter()
+				t_wall = TimingTracker(enabled=True, log_each=False)
+				t_wall.point_ms("req_start", 0.0)
+				# full_times_list = []
+				render = self._get_shared_render(video_queue=video_queue)
+				render_trd = Thread(target=start_render_process,
+				                    args=(audio_queue, video_queue, full_start_time, sampling_timestamps, request_id, render))
+				render_trd.start()
+
+				# Progress tracking
+				# Offline mode: expects full audio in single chunk (server splits internally)
+				# If multi-chunk offline needed, accumulate total_frames in reader_thread
+				progress_tracker = ProgressTracker(
+					emit_interval=TARGET_FPS,
+					is_online=is_online.is_set(),
+					total_frames=0,
+				)
+
+				reader_trd = Thread(target=reader_thread, args=(
+					request_iterator, audio_queue, video_queue, is_online, is_alpha, output_format, sampling_timestamps, request_id, context, progress_tracker, audio_ms_total))
+				reader_trd.start()
+
+				mqueue_trd = Thread(target=get_mqueue_thread,
+				                              args=(video_queue, local_queue, is_alpha, output_format, self.alpha_service,
+				                                    request_id,))
+				mqueue_trd.start()
+
+				first_chunk_flag = False
+				# first_img_flag = True
+				# full_time = 0
+				# min_time = 1000
+				# max_time = 0
+				# chunk_counter = 0
+				avatar_sent_mem = None
+				avatar_id = None
+				# Track frame dimensions for VideoChunk (fallback if frame.width/height is None)
+				tracked_width = None
+				tracked_height = None
+				frames_sent = 0
+				bytes_sent = 0
+				queue_wait_total_ms = 0.0
+				queue_wait_max_ms = 0.0
+				queue_get_count = 0
+				stream_started = False  # only track queue waits after first frame sent
+				grpc_gap_max_ms = 0.0
+				prev_video_send_time = None
+				first_send_ms = None
+				stream_end_ms = None
+
+				first_frame_time = None
+				every_frame_time = 1 / TARGET_FPS
+				realtime_metric = 0
+
+				try:
+					while True:
+						queue_get_start = time.perf_counter()
+						frame = local_queue.get()
+						# only track queue waits after stream started (skip TTFF wait)
+						if stream_started:
+							queue_wait_ms = (time.perf_counter() - queue_get_start) * 1000
+							queue_wait_total_ms += queue_wait_ms
+							if queue_wait_ms > queue_wait_max_ms:
+								queue_wait_max_ms = queue_wait_ms
+							queue_get_count += 1
+						logger.trace("CHUNK LAST -> OUTPUT")
+						if isinstance(frame, EventObject):
+							if frame.event_name == "wall_point":
+								point_name = frame.event_data.get("name")
+								elapsed_ms = frame.event_data.get("elapsed_ms")
+								if point_name and elapsed_ms is not None:
+									t_wall.point_once_ms(point_name, float(elapsed_ms))
+								continue
+							if frame.event_name == "animation":
+								if frame.event_data["event"]:
+									yield RenderResponse(
+										start_animation=StartAnimation(animation_name=frame.event_data["name"]))
+									ev = 1
+								else:
+									yield RenderResponse(
+										end_animation=EndAnimation(animation_name=frame.event_data["name"]))
+									ev = 0
+								logger.debug(f"SENT ANIMATION EVENT {frame.event_data['name']} {ev}")
+							elif frame.event_name == "emotion":
+								yield RenderResponse(
+									emotion_set=EmotionSet(emotion_name=frame.event_data["name"]))
+								logger.debug(f"SENT EMOTION EVENT")
+							elif frame.event_name == "animations_cleared":
+								yield RenderResponse(
+									animations_cleared=AnimationsCleared())
+								logger.debug(f"SENT ANIMATIONS_CLEARED EVENT")
+							elif frame.event_name == "avatar_set":
+								avatar_sent_mem = frame
+								avatar_id = frame.event_data.get("avatar_id")
+								# Track dimensions from avatar_set event (avatar mode)
+								if frame.event_data.get("width") is not None and frame.event_data.get("height") is not None:
+									tracked_width = frame.event_data.get("width")
+									tracked_height = frame.event_data.get("height")
+									logger.debug(f"[DIMENSION] Tracked avatar dimensions from event: {tracked_width}x{tracked_height}")
+							elif frame.event_name == "image_set":
+								# Track dimensions from image_set event (image mode)
+								if frame.event_data.get("width") is not None and frame.event_data.get("height") is not None:
+									tracked_width = frame.event_data.get("width")
+									tracked_height = frame.event_data.get("height")
+									logger.debug(f"[DIMENSION] Tracked image dimensions from event: {tracked_width}x{tracked_height}")
+
 							continue
-						if frame.event_name == "animation":
-							if frame.event_data["event"]:
-								yield RenderResponse(
-									start_animation=StartAnimation(animation_name=frame.event_data["name"]))
-								ev = 1
-							else:
-								yield RenderResponse(
-									end_animation=EndAnimation(animation_name=frame.event_data["name"]))
-								ev = 0
-							logger.debug(f"SENT ANIMATION EVENT {frame.event_data['name']} {ev}")
-						elif frame.event_name == "emotion":
-							yield RenderResponse(
-								emotion_set=EmotionSet(emotion_name=frame.event_data["name"]))
-							logger.debug(f"SENT EMOTION EVENT")
-						elif frame.event_name == "animations_cleared":
-							yield RenderResponse(
-								animations_cleared=AnimationsCleared())
-							logger.debug(f"SENT ANIMATIONS_CLEARED EVENT")
-						elif frame.event_name == "avatar_set":
-							avatar_sent_mem = frame
-							avatar_id = frame.event_data.get("avatar_id")
-							# Track dimensions from avatar_set event (avatar mode)
-							if frame.event_data.get("width") is not None and frame.event_data.get("height") is not None:
-								tracked_width = frame.event_data.get("width")
-								tracked_height = frame.event_data.get("height")
-								logger.debug(f"[DIMENSION] Tracked avatar dimensions from event: {tracked_width}x{tracked_height}")
-						elif frame.event_name == "image_set":
-							# Track dimensions from image_set event (image mode)
-							if frame.event_data.get("width") is not None and frame.event_data.get("height") is not None:
-								tracked_width = frame.event_data.get("width")
-								tracked_height = frame.event_data.get("height")
-								logger.debug(f"[DIMENSION] Tracked image dimensions from event: {tracked_width}x{tracked_height}")
+						elif isinstance(frame, ErrorObject):
+							yield RenderResponse(request_error=RequestError(error_type=str(frame.error_type), error_message=frame.error_message))
+							logger.error(f"GOT ERROR OBJECT. ERROR TYPE: {str(frame.error_type)} ERROR MESSAGE: {frame.error_message}")
 
-						continue
-					elif isinstance(frame, ErrorObject):
-						yield RenderResponse(request_error=RequestError(error_type=str(frame.error_type), error_message=frame.error_message))
-						logger.error(f"GOT ERROR OBJECT. ERROR TYPE: {str(frame.error_type)} ERROR MESSAGE: {frame.error_message}")
-
-						if frame.error_type in self.critical_exceptions:
-							logger.info("KILL CONTAINER")
-							os._exit(1)
-						elif frame.error_type in self.important_exceptions:
-							logger.info("STOP PROCESS")
+							if frame.error_type in self.critical_exceptions:
+								logger.info("KILL CONTAINER")
+								os._exit(1)
+							elif frame.error_type in self.important_exceptions:
+								logger.info("STOP PROCESS")
+								break
+							continue
+						# if frame.error_type == "avatar":
+						# 	break
+						elif frame.data is None:
+							# TRACE: final state, not milestone
+							logger.trace("CHUNK LAST IS NONE - BREAK")
+							elapsed_ms = (time.perf_counter() - full_start_time.value) * 1000 if full_start_time.value else 0.0
+							t_wall.point_once_ms("stream_end", elapsed_ms)
+							stream_end_ms = elapsed_ms
 							break
-						continue
-					# if frame.error_type == "avatar":
-					# 	break
-					elif frame.data is None:
-						# TRACE: final state, not milestone
-						logger.trace("CHUNK LAST IS NONE - BREAK")
-						elapsed_ms = (time.perf_counter() - full_start_time.value) * 1000 if full_start_time.value else 0.0
-						t_wall.point_once_ms("stream_end", elapsed_ms)
-						stream_end_ms = elapsed_ms
-						break
-					# cur_time = time.perf_counter()
-					# if first_img_flag:
-					#     img = Image.frombytes("RGBA", (frame.height, frame.width),
-					#                           frame.data, "raw", "BGRA")
-					#     img.save(f"./checkpoints/frame.png")
-					#     first_img_flag = False
-					# if first_chunk_flag:
-					# 	cur_time = time.perf_counter()
-					# 	chunk_time = cur_time - start_time
-					# 	if chunk_time >= max_time:
-					# 		max_time = chunk_time
-					# 	if chunk_time <= min_time:
-					# 		min_time = chunk_time
-					# 	full_time += chunk_time
-					# 	chunk_counter += 1
-					# logger.info(f"GRPC CHUNK TIME: {chunk_time}")
-					# logger.info(f"START GRPC YIELDING {chunk_counter}")
-					# full_delta_time = time.perf_counter() - full_start_time.value
-					# full_times_list.append(full_delta_time)
-					active_client = context.is_active()
-					# TRACE: every frame = spam
-					logger.trace(f"CLIENT: {active_client}")
-					if not active_client:
-						raise RpcError
-					if frame_idx == 0:
-						logger.debug(f"[EVENT] SEND 0")
-					elif frame_idx % 100 == 0:
-						logger.trace(f"[EVENT] SEND {frame_idx}")
-					if avatar_sent_mem:
-						yield RenderResponse(
-							avatar_set=AvatarSet(avatar_id=avatar_sent_mem.event_data["avatar_id"]))
-						logger.debug(f"SENT AVATAR SET EVENT")
-						avatar_sent_mem = None
-					# logger.info(f"{frame.width}x{frame.height}, {len(frame.data)}")
-					if frame_idx == 0:
-						elapsed_ms = (time.perf_counter() - full_start_time.value) * 1000 if full_start_time.value else 0.0
-						t_wall.point_once_ms("first_send", elapsed_ms)
-						first_send_ms = elapsed_ms
-						stream_started = True
-					send_time = time.perf_counter()
-					if prev_video_send_time is not None:
-						gap_ms = (send_time - prev_video_send_time) * 1000
-						if gap_ms > grpc_gap_max_ms:
-							grpc_gap_max_ms = gap_ms
-					prev_video_send_time = send_time
-					frames_sent += 1
-					bytes_sent += len(frame.data)
-					# Track dimensions from first valid frame, use as fallback for subsequent frames
-					if frame.width is not None and frame.height is not None:
-						if tracked_width is None:
-							tracked_width = frame.width
-							tracked_height = frame.height
-							logger.debug(f"[DIMENSION] Tracked frame dimensions: {tracked_width}x{tracked_height}")
-					# Use tracked dimensions as fallback if frame dimensions are None
-					video_width = frame.width if frame.width is not None else tracked_width
-					video_height = frame.height if frame.height is not None else tracked_height
-					if video_width is None or video_height is None:
-						logger.warning(f"[DIMENSION] Missing frame dimensions at frame_idx={frame_idx}, frame.width={frame.width}, frame.height={frame.height}")
-					yield RenderResponse(video=VideoChunk(data=frame.data, width=video_width or 0, height=video_height or 0, frame_idx=frame_idx, is_muted=getattr(frame, 'is_muted', False)))
-					if first_frame_time is None:
-						first_frame_time = time.perf_counter()
-					realtime_metric = (time.perf_counter() - first_frame_time) - frame_idx * every_frame_time
-					if frame_idx == 0:
-						logger.debug(f"[EVENT] SENT 0 realtime_metric={realtime_metric:.3f}s")
-					elif frame_idx % 100 == 0:
-						logger.trace(f"[EVENT] SENT {frame_idx} realtime_metric={realtime_metric:.3f}s")
+						# cur_time = time.perf_counter()
+						# if first_img_flag:
+						#     img = Image.frombytes("RGBA", (frame.height, frame.width),
+						#                           frame.data, "raw", "BGRA")
+						#     img.save(f"./checkpoints/frame.png")
+						#     first_img_flag = False
+						# if first_chunk_flag:
+						# 	cur_time = time.perf_counter()
+						# 	chunk_time = cur_time - start_time
+						# 	if chunk_time >= max_time:
+						# 		max_time = chunk_time
+						# 	if chunk_time <= min_time:
+						# 		min_time = chunk_time
+						# 	full_time += chunk_time
+						# 	chunk_counter += 1
+						# logger.info(f"GRPC CHUNK TIME: {chunk_time}")
+						# logger.info(f"START GRPC YIELDING {chunk_counter}")
+						# full_delta_time = time.perf_counter() - full_start_time.value
+						# full_times_list.append(full_delta_time)
+						active_client = context.is_active()
+						# TRACE: every frame = spam
+						logger.trace(f"CLIENT: {active_client}")
+						if not active_client:
+							raise RpcError
+						if frame_idx == 0:
+							logger.debug(f"[EVENT] SEND 0")
+						elif frame_idx % 100 == 0:
+							logger.trace(f"[EVENT] SEND {frame_idx}")
+						if avatar_sent_mem:
+							yield RenderResponse(
+								avatar_set=AvatarSet(avatar_id=avatar_sent_mem.event_data["avatar_id"]))
+							logger.debug(f"SENT AVATAR SET EVENT")
+							avatar_sent_mem = None
+						# logger.info(f"{frame.width}x{frame.height}, {len(frame.data)}")
+						if frame_idx == 0:
+							elapsed_ms = (time.perf_counter() - full_start_time.value) * 1000 if full_start_time.value else 0.0
+							t_wall.point_once_ms("first_send", elapsed_ms)
+							first_send_ms = elapsed_ms
+							stream_started = True
+						send_time = time.perf_counter()
+						if prev_video_send_time is not None:
+							gap_ms = (send_time - prev_video_send_time) * 1000
+							if gap_ms > grpc_gap_max_ms:
+								grpc_gap_max_ms = gap_ms
+						prev_video_send_time = send_time
+						frames_sent += 1
+						bytes_sent += len(frame.data)
+						# Track dimensions from first valid frame, use as fallback for subsequent frames
+						if frame.width is not None and frame.height is not None:
+							if tracked_width is None:
+								tracked_width = frame.width
+								tracked_height = frame.height
+								logger.debug(f"[DIMENSION] Tracked frame dimensions: {tracked_width}x{tracked_height}")
+						# Use tracked dimensions as fallback if frame dimensions are None
+						video_width = frame.width if frame.width is not None else tracked_width
+						video_height = frame.height if frame.height is not None else tracked_height
+						if video_width is None or video_height is None:
+							logger.warning(f"[DIMENSION] Missing frame dimensions at frame_idx={frame_idx}, frame.width={frame.width}, frame.height={frame.height}")
+						yield RenderResponse(video=VideoChunk(data=frame.data, width=video_width or 0, height=video_height or 0, frame_idx=frame_idx, is_muted=getattr(frame, 'is_muted', False)))
+						if first_frame_time is None:
+							first_frame_time = time.perf_counter()
+						realtime_metric = (time.perf_counter() - first_frame_time) - frame_idx * every_frame_time
+						if frame_idx == 0:
+							logger.debug(f"[EVENT] SENT 0 realtime_metric={realtime_metric:.3f}s")
+						elif frame_idx % 100 == 0:
+							logger.trace(f"[EVENT] SENT {frame_idx} realtime_metric={realtime_metric:.3f}s")
 
-					frame_idx += 1
+						frame_idx += 1
 
-					# Emit progress metadata periodically
-					metadata = progress_tracker.track_frame_progress(realtime_metric=realtime_metric)
-					if metadata:
-						yield RenderResponse(metadata=metadata)
-				# logger.info(f"END GRPC YIELDING {chunk_counter}")
-				# start_time = cur_time
-				# first_chunk_flag = True
-			except RpcError as e:
-				logger.exception(f"GOT RPCERROR EXCEPTION IN RENDER STREAM {str(e)} START CLOSING PROCESS")
-			except Exception as e:
-				logger.exception(f"GOT EXCEPTION IN RENDER STREAM {str(e)} START CLOSING PROCESS")
-			except SystemExit as e:
-				raise e
-			except BaseException as e:
-				logger.exception(f"GOT BASEEXCEPTION IN RENDER STREAM {str(e)} START CLOSING PROCESS")
-			video_queue.put(ImageObject(data=None, height=None, width=None))
-			logger.info(f"START JOINING PROCESS")
-			render_process.terminate()
-			logger.info(f"PROCESS FINISHED")
-			reader_trd.join()
-			logger.info(f"READER FINISHED")
-			mqueue_trd.join()
-			logger.info(f"MQUEUE FINISHED")
-			# logger.info(f"MIN CHUNK TIME: {min_time}")
-			# logger.info(f"MAX CHUNK TIME: {max_time}")
-			# if chunk_counter != 0:
-			# 	logger.info(f"AVG CHUNK TIME: {full_time / chunk_counter}")
-			# logger.info(f"FULL TIME: {full_time}")
-			# logger.info(f"ALL PROCESSES CLOSED")
-			# logger.info(full_times_list)
-			elapsed_ms = (time.perf_counter() - full_start_time.value) * 1000 if full_start_time.value else 0.0
-			t_wall.point_once_ms("stream_end", elapsed_ms)
-			if stream_end_ms is None:
-				stream_end_ms = elapsed_ms
-			t_wall.point_once_ms("req_end", elapsed_ms)
-			t_wall.delta("service_init", "loading_start", "loading_end")
-			t_wall.delta("avatar_prepare", "avatar_start", "avatar_ready")
-			t_wall.delta("audio_wait", "stream_start", "infer_start")
-			t_wall.delta("prime_first_frame", "infer_start", "first_frame_ready")
-			t_wall.delta("ttff_server", "req_start", "first_send")
-			t_wall.delta("stream_duration", "first_send", "stream_end")
-			t_wall.delta("cleanup", "stream_end", "req_end")
-			t_wall.delta("total", "req_start", "req_end")
-			stream_duration_s = 0.0
-			if first_send_ms is not None and stream_end_ms is not None and stream_end_ms > first_send_ms:
-				stream_duration_s = (stream_end_ms - first_send_ms) / 1000
-			avg_send_fps = (frames_sent / stream_duration_s) if stream_duration_s > 0 else 0.0
-			queue_wait_avg_ms = (queue_wait_total_ms / queue_get_count) if queue_get_count else 0.0
-			t_wall.log_summary(label="WALL", include_points=False, extra={
-				"avatar_id": avatar_id or "-",
-				"audio_ms": int(audio_ms_total.value),
-				"target_fps": TARGET_FPS,
-				"frames_sent": frames_sent,
-				"bytes_sent": bytes_sent,
-				"avg_send_fps": f"{avg_send_fps:.1f}",
-				"queue_wait_avg_ms": f"{queue_wait_avg_ms:.1f}",
-				"queue_wait_max_ms": f"{queue_wait_max_ms:.1f}",
-				"grpc_gap_max_ms": f"{grpc_gap_max_ms:.1f}",
-			})
-			logger.info(f"COMPLETE")
+						# Emit progress metadata periodically
+						metadata = progress_tracker.track_frame_progress(realtime_metric=realtime_metric)
+						if metadata:
+							yield RenderResponse(metadata=metadata)
+					# logger.info(f"END GRPC YIELDING {chunk_counter}")
+					# start_time = cur_time
+					# first_chunk_flag = True
+				except RpcError as e:
+					logger.exception(f"GOT RPCERROR EXCEPTION IN RENDER STREAM {str(e)} START CLOSING PROCESS")
+				except Exception as e:
+					logger.exception(f"GOT EXCEPTION IN RENDER STREAM {str(e)} START CLOSING PROCESS")
+				except SystemExit as e:
+					raise e
+				except BaseException as e:
+					logger.exception(f"GOT BASEEXCEPTION IN RENDER STREAM {str(e)} START CLOSING PROCESS")
+				video_queue.put(ImageObject(data=None, height=None, width=None))
+				audio_queue.put(None)
+				logger.info(f"START JOINING RENDER THREAD")
+				render_trd.join()
+				logger.info(f"RENDER THREAD FINISHED")
+				reader_trd.join()
+				logger.info(f"READER FINISHED")
+				mqueue_trd.join()
+				logger.info(f"MQUEUE FINISHED")
+				# logger.info(f"MIN CHUNK TIME: {min_time}")
+				# logger.info(f"MAX CHUNK TIME: {max_time}")
+				# if chunk_counter != 0:
+				# 	logger.info(f"AVG CHUNK TIME: {full_time / chunk_counter}")
+				# logger.info(f"FULL TIME: {full_time}")
+				# logger.info(f"ALL PROCESSES CLOSED")
+				# logger.info(full_times_list)
+				elapsed_ms = (time.perf_counter() - full_start_time.value) * 1000 if full_start_time.value else 0.0
+				t_wall.point_once_ms("stream_end", elapsed_ms)
+				if stream_end_ms is None:
+					stream_end_ms = elapsed_ms
+				t_wall.point_once_ms("req_end", elapsed_ms)
+				t_wall.delta("service_init", "loading_start", "loading_end")
+				t_wall.delta("avatar_prepare", "avatar_start", "avatar_ready")
+				t_wall.delta("audio_wait", "stream_start", "infer_start")
+				t_wall.delta("prime_first_frame", "infer_start", "first_frame_ready")
+				t_wall.delta("ttff_server", "req_start", "first_send")
+				t_wall.delta("stream_duration", "first_send", "stream_end")
+				t_wall.delta("cleanup", "stream_end", "req_end")
+				t_wall.delta("total", "req_start", "req_end")
+				stream_duration_s = 0.0
+				if first_send_ms is not None and stream_end_ms is not None and stream_end_ms > first_send_ms:
+					stream_duration_s = (stream_end_ms - first_send_ms) / 1000
+				avg_send_fps = (frames_sent / stream_duration_s) if stream_duration_s > 0 else 0.0
+				queue_wait_avg_ms = (queue_wait_total_ms / queue_get_count) if queue_get_count else 0.0
+				t_wall.log_summary(label="WALL", include_points=False, extra={
+					"avatar_id": avatar_id or "-",
+					"audio_ms": int(audio_ms_total.value),
+					"target_fps": TARGET_FPS,
+					"frames_sent": frames_sent,
+					"bytes_sent": bytes_sent,
+					"avg_send_fps": f"{avg_send_fps:.1f}",
+					"queue_wait_avg_ms": f"{queue_wait_avg_ms:.1f}",
+					"queue_wait_max_ms": f"{queue_wait_max_ms:.1f}",
+					"grpc_gap_max_ms": f"{grpc_gap_max_ms:.1f}",
+				})
+				logger.info(f"COMPLETE")
+			finally:
+				self.render_lock.release()
 
 	def InfoRouter(self, request, context):
 		folder_path = "/app/assets/"
