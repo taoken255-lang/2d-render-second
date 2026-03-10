@@ -143,7 +143,7 @@ def ffmpeg_av_pipe(output_path: str, width: int, height: int, fps: int,
         "ffmpeg",
         "-hide_banner", "-loglevel", "verbose",
         "-y",
-        "-report",
+        #"-report",
         "-stats",
         "-debug_ts",
 
