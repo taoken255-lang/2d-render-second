@@ -1,17 +1,18 @@
 import asyncio
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from uuid import uuid4
 
 import grpc
 import wave
 from grpc import aio
-from PIL import Image
 
 from rtc_mediaserver.config import settings
 from rtc_mediaserver.logging_config import get_logger, setup_default_logging
 from rtc_mediaserver.proto import render_service_pb2_grpc, render_service_pb2
+from rtc_mediaserver.webrtc_server.constants import AUDIO_SETTINGS
 from rtc_mediaserver.webrtc_server.tools import cleanup_old_results
 
 setup_default_logging()
@@ -126,8 +127,101 @@ async def save_audio_with_ffmpeg(audio: bytes, sample_rate: int, bps: int, outpu
 
     print(f"✅ Audio saved: {output_path}")
 
+import os
+from contextlib import contextmanager
 
-async def local_video_run(audio: bytes, sample_rate: int, bps: int, avatar_id: str, output_path: Path):
+@contextmanager
+def ffmpeg_av_pipe(output_path: str, width: int, height: int, fps: int,
+                   vcodec: str = "libx264",
+                   audio_sr: int = 16000, audio_ch: int = 1, audio_fmt: str = "s16le"):
+    """ffmpeg pipe for video and audio."""
+
+    frame_bytes = width * height * 3  # rgb24
+
+    r_audio, w_audio = os.pipe()
+    cmd = [
+        "ffmpeg",
+        "-hide_banner", "-loglevel", "verbose",
+        "-y",
+        "-report",
+        "-stats",
+        "-debug_ts",
+
+        # VIDEO from stdin
+        "-thread_queue_size", "1024",
+        "-analyzeduration", "0",
+        "-probesize", "32",
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-s", f"{width}x{height}",
+        "-r", str(fps),
+        "-i", "pipe:0",
+
+        # AUDIO from fd=3
+        "-thread_queue_size", "1024",
+        "-analyzeduration", "0",
+        "-probesize", "32",
+        "-f", audio_fmt,             # s16le => int16 PCM little-endian
+        "-ar", str(audio_sr),
+        "-ac", str(audio_ch),
+        "-i", f"pipe:{r_audio}",
+
+        # encode
+        "-c:v", vcodec,
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-c:a", "aac",
+
+        # stop when one stream ends (обычно удобно)
+        # "-shortest",
+        output_path,
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        pass_fds=(r_audio,),   # пробрасываем fd в ffmpeg
+        stderr=subprocess.DEVNULL,
+        bufsize=frame_bytes,
+        close_fds=False,
+    )
+
+    os.close(r_audio)  # в родителе read-end больше не нужен
+
+    audio_pipe = os.fdopen(w_audio, "wb", buffering=0)
+
+    # def _drain_stderr(p):
+    #     for line in p.stderr:
+    #         logger.warning("[ffmpeg] %s", line.rstrip())
+    #
+    # t = threading.Thread(target=_drain_stderr, args=(proc,), daemon=True)
+    # t.start()
+
+    try:
+        yield proc, frame_bytes, audio_pipe
+    finally:
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            audio_pipe.close()
+        except Exception:
+            pass
+        proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed (code={proc.returncode})")
+
+def _write_all(stream, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = stream.write(view)
+        if written is None or written <= 0:
+            raise RuntimeError(f"audio write failed: {written}")
+        view = view[written:]
+
+async def local_video_run(audio: bytes, sample_rate: int, bps: int, avatar_id: str, output_path: Path, audio_fmt: str):
     if not output_path.exists():
         output_path.mkdir(exist_ok=True, parents=True)
     logger.info(f"Output path: {output_path}")
@@ -142,49 +236,88 @@ async def local_video_run(audio: bytes, sample_rate: int, bps: int, avatar_id: s
         bps=bps,
         avatar_id=avatar_id
     ))
+
+    video_path = output_path / "video.mp4"
+
     img_idx = 0
+    img_w = 0
+    img_h = 0
+    frames = []
     async for idxa, response_chunk in aenumerate(response_stream):
         logger.info(f"CHUNK {idxa}")
         if response_chunk.WhichOneof("chunk") == "video":
-            logger.info(f"SAVE IMAGE {img_idx}")
-            logger.info(f"{response_chunk.video.width}x{response_chunk.video.height}")
-            img = Image.frombytes("RGB", (response_chunk.video.width, response_chunk.video.height),
-                response_chunk.video.data, "raw")
-            img.save(frames_path / f"{img_idx}.png")
-            img_idx += 1
-        elif response_chunk.WhichOneof("chunk") == "start_animation":
-            logger.info(f"START ANIMATION {response_chunk.start_animation.animation_name}")
-        elif response_chunk.WhichOneof("chunk") == "end_animation":
-            logger.info(f"END ANIMATION {response_chunk.end_animation.animation_name}")
-        elif response_chunk.WhichOneof("chunk") == "emotion_set":
-            logger.info(f"EMOTION SET {response_chunk.emotion_set.emotion_name}")
+            logger.info(f"RECV IMAGE {img_idx} {response_chunk.video.width}x{response_chunk.video.height}")
 
-    audio_path = output_path / "audio.wav"
-    video_path = output_path / "video.mp4"
-    await save_audio_with_ffmpeg(audio=audio, bps=bps, sample_rate=sample_rate, output_path=audio_path)
-    await combine_with_ffmpeg(frames_dir=frames_path, audio_path=audio_path, output_path=video_path, fps=25)
+            if not img_h and not img_w:
+                img_h = response_chunk.video.height
+                img_w = response_chunk.video.width
+
+            frames.append(response_chunk.video.data)
+
+            img_idx += 1
+
+    logger.info(f"Start writing to pipe")
+    with ffmpeg_av_pipe(
+            str(video_path),
+            img_w,
+            img_h,
+            25,
+            audio_fmt=audio_fmt,
+            audio_sr=sample_rate) as (proc, frame_size, aout):
+        bytes_per_sample = max(1, bps // 8)
+        audio_step = int((sample_rate * bytes_per_sample) / 25)
+        logger.info(f"Audio step {audio_step}")
+
+        need_bytes = len(frames) * audio_step
+        had_bytes = len(audio)
+        logger.info(f"Need audio={need_bytes}, total_audio={had_bytes}")
+        if need_bytes > had_bytes:
+            audio = audio.ljust(need_bytes, b'\x00')
+            logger.info(f"Filled audio with {need_bytes - had_bytes} bytes")
+        elif had_bytes > need_bytes:
+            audio = audio[:need_bytes]
+            logger.info(f"Trimmed audio by {had_bytes - need_bytes} bytes")
+
+        audio_errors = []
+
+        def _audio_writer():
+            try:
+                _write_all(aout, audio)
+            except Exception as exc:  # noqa: BLE001
+                audio_errors.append(exc)
+            finally:
+                try:
+                    aout.close()
+                except Exception:
+                    pass
+
+        audio_thread = threading.Thread(target=_audio_writer, daemon=True, name="ffmpeg-audio-writer")
+        audio_thread.start()
+
+        logger.info("frame_size expected=%d", frame_size)
+        logger.info("first frame len=%d", len(frames[0]) if frames else -1)
+        for idx, frame in enumerate(frames):
+            logger.info(f"Write {idx}/{len(frames)} frame")
+
+            if len(frame) != frame_size:
+                logger.error("BAD FRAME SIZE idx=%d got=%d expected=%d", idx, len(frame), frame_size)
+                raise RuntimeError("frame size mismatch: not raw rgb24 frame")
+
+            proc.stdin.write(frame)
+
+            if proc.poll() is not None:
+                logger.error(f"ffmpeg died with return code {proc.returncode}")
+                raise RuntimeError("ffmpeg died")
+
+        if proc.stdin:
+            proc.stdin.close()
+
+        audio_thread.join()
+        if audio_errors:
+            raise RuntimeError(f"audio writer failed: {audio_errors[0]}")
+
     shutil.rmtree(frames_path)
     logger.info(f"Frames in path {frames_path} are deleted")
     await cleanup_old_results()
     logger.info(f"Old results cleared")
 
-
-async def run():
-    url = "localhost:8501"
-    aud_file = Path("../../samples/11sec_16k_1ch.wav")
-    img_file = "tools/client/res/gomer.png"
-    avatar_id = "vedenina2"
-    print(avatar_id)
-    output_path = Path("../../test")
-    request_id = uuid4()
-
-    with wave.open(str(aud_file), 'rb') as wf:
-        n_frames =wf.getnframes()
-        audio = wf.readframes(n_frames)
-        sr = wf.getframerate()
-
-    await local_video_run(audio=audio, avatar_id=avatar_id, output_path=output_path / str(request_id), sample_rate=sr, bps=16)
-
-
-if __name__ == '__main__':
-    asyncio.get_event_loop().run_until_complete(run())

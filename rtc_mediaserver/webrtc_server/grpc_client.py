@@ -144,14 +144,6 @@ async def stream_worker_aio() -> None:
                         logger.warning(f"Request -> interrupt lipsync")
                         yield render_service_pb2.RenderRequest(
                             interrupt=render_service_pb2.Interrupt())
-                        # silence = np.zeros(AUDIO_SETTINGS.samples_per_chunk, dtype=np.int16).tobytes()
-                        # for _ in range(int(math.ceil(1.5 / AUDIO_CHUNK_MS))):
-                        #     pending_audio.append((audio_sec, sr, None, False, False))
-                        #     yield render_service_pb2.RenderRequest(
-                        #         audio=render_service_pb2.AudioChunk(data=silence, sample_rate=sr, bps=16,
-                        #                                             is_voice=False),
-                        #         online=True
-                        #     )
 
                 logger.debug("Sent audio chunk to render service (pending=%d)",len(pending_audio))
 

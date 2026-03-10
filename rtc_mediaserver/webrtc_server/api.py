@@ -35,7 +35,7 @@ from .player import WebRTCMediaPlayer
 from .handlers import HANDLERS, ClientState
 from .info import info
 from .tts.elevenlabs import synthesize_worker, voices
-from .util import get_sample_rate_from_wav_bytes, wav_to_mono_and_sample_rate
+from .util import wav_to_mono_and_sample_rate
 from .watchdog import watchdog
 from .webrtc_manager import webrtc_manager
 from ..config import settings
@@ -531,7 +531,8 @@ async def start_render_task(
         bps: int,
         avatar_id: str,
         output_path: Path,
-        request_id: UUID4
+        request_id: UUID4,
+        audio_fmt: str
 ):
     try:
         await local_video_run(
@@ -539,13 +540,13 @@ async def start_render_task(
                 sample_rate=sample_rate,
                 bps=bps,
                 avatar_id=avatar_id,
-                output_path=output_path
+                output_path=output_path,
+                audio_fmt=audio_fmt
             )
         await TASK_MANAGER.set_status(task_id=str(request_id), status="done")
     except Exception as exc:
         logger.error(exc)
         await TASK_MANAGER.set_status(task_id=str(request_id), status="error")
-
 
 @app.post("/render")
 async def render(
@@ -572,7 +573,7 @@ async def render(
         else:
             _, audio_ext = os.path.splitext(audio.filename)
             request_audio = await audio.read()
-            sample_rate, mono_audio = wav_to_mono_and_sample_rate(request_audio)
+            sample_rate, audio_fmt, mono_audio = wav_to_mono_and_sample_rate(request_audio)
             if not sample_rate or not mono_audio:
                 logger.info("audio decode error")
                 return JSONResponse(status_code=400, content={
@@ -594,7 +595,8 @@ async def render(
                 bps=16,
                 avatar_id=data.avatar,
                 output_path=output_path,
-                request_id=request_id
+                request_id=request_id,
+                audio_fmt=audio_fmt
             ))
             TASK_MANAGER.set_task(t, job_id=str(request_id))
 
