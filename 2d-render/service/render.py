@@ -1,4 +1,6 @@
 from multiprocessing import Queue
+from typing import Union
+
 from loguru import logger
 import numpy as np
 import librosa
@@ -14,7 +16,7 @@ from config import Config
 
 
 class RenderService:
-	def __init__(self, video_queue: Queue | None = None, is_online: bool = False, sampling_timestamps: int = 0):
+	def __init__(self, video_queue: Union[Queue, None] = None, is_online: bool = False, sampling_timestamps: int = 0):
 		try:
 			if torch.cuda.is_available():
 				logger.info(f"CUDA is available: {torch.cuda.get_device_name(0)}")
