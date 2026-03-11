@@ -1,6 +1,4 @@
 from multiprocessing import Queue
-from typing import Union
-
 from loguru import logger
 import numpy as np
 import librosa
@@ -11,49 +9,48 @@ import io
 
 from agnet.stream_pipeline_online import StreamSDK as onlineSDK
 
-from service.object_models import RenderAnimationObject, RenderEmotionObject, ErrorObject, ErrorDataType, InterruptState
+from service.object_models import RenderAnimationObject, RenderEmotionObject, ErrorObject, ErrorDataType
 from config import Config
 
 
 class RenderService:
-	def __init__(self, video_queue: Union[Queue, None] = None, is_online: bool = False, sampling_timestamps: int = 0):
+	def __init__(self, video_queue: Queue, is_online: bool = False, sampling_timestamps: int = 0):
 		try:
 			if torch.cuda.is_available():
 				logger.info(f"CUDA is available: {torch.cuda.get_device_name(0)}")
 			else:
 				logger.exception(f"CUDA is not available")
 				raise Exception()
+			self.is_online = is_online
+			self.sampling_timestamps = sampling_timestamps
 			cfg_pkl = f"{Config.WEIGHTS_PATH}/checkpoints/agnet_cfg/v0.4_hubert_cfg_trt_online.pkl"
 			data_root = Config.AGNET_DATA_ROOT
+
+			if is_online:
+				self.sdk = onlineSDK(cfg_pkl, data_root)
+				self.render_chunk = self.render_chunk_online
+			else:
+				self.sdk = onlineSDK(cfg_pkl, data_root)
+				self.render_chunk = self.render_chunk_online
 
 			self.bits_per_sample = 16
 			self.num_channels = 1
 			self.samples_per_sec = 16000
 			self.chunk_duration = 2.0
 
-			self.sdk = onlineSDK(cfg_pkl, data_root)
-			self.prepare_session(is_online=is_online, sampling_timestamps=sampling_timestamps)
+			self.audio_buffer = np.zeros((3 * 640,), dtype=np.float32) if self.is_online else np.array([], dtype=np.float32)
+
+			self.is_setup_nd = True
+			self.timer_first_flag = True
+			self.first_render_chunk_logged = False
+			self.first_run_chunk_logged = False
+			self.chunks_rx = 0
+			self.start_time = 0
+			self.animation_to_play = []
+			self.emotion_to_play = []
 		except Exception as e:
 			logger.info(f"ERROR WHILE INITIALIZING {str(e)}")
-			if video_queue is not None:
-				video_queue.put(ErrorObject(error_type=ErrorDataType.Initialization, error_message=f"Error during initialization of network: {str(e)}"))
-			raise
-
-	def prepare_session(self, is_online: bool, sampling_timestamps: int = 0):
-		self.is_online = is_online
-		self.sampling_timestamps = sampling_timestamps
-		self.render_chunk = self.render_chunk_online
-
-		self.audio_buffer = np.zeros((3 * 640,), dtype=np.float32) if self.is_online else np.array([], dtype=np.float32)
-		self.is_setup_nd = True
-		self.timer_first_flag = True
-		self.first_render_chunk_logged = False
-		self.first_run_chunk_logged = False
-		self.chunks_rx = 0
-		self.start_time = 0
-		self.animation_to_play = []
-		self.emotion_to_play = []
-		self.sdk.interrupt_state = InterruptState()
+			video_queue.put(ErrorObject(error_type=ErrorDataType.Initialization, error_message=f"Error during initialization of network: {str(e)}"))
 
 	# os.kill(os.getpid(), signal.SIGTERM)
 

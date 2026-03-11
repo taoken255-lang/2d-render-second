@@ -186,8 +186,6 @@ class StreamSDK:
         # ======== Create Timing Tracker ========
         self.timing = TimingTracker(enabled=True)
         self.timing.point("setup_start")
-        self.stop_event = threading.Event()
-        self.interrupt_state = InterruptState()
 
         # ======== Prepare Options ========
         kwargs = self._merge_kwargs(self.default_kwargs, kwargs)

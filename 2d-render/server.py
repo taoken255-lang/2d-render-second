@@ -51,7 +51,7 @@ elif Config.LOG_LEVEL == "ERROR":
 def grpc_service() -> None:
 	# Avoid importing heavy alpha stack in spawned render worker processes.
 	from service.offline_alpha import OfflineAlphaService
-	
+
 	alpha_service = OfflineAlphaService()
 	server = grpc.server(futures.ThreadPoolExecutor(max_workers=10),
 	                     options=[
