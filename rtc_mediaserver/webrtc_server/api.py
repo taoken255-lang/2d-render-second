@@ -87,8 +87,8 @@ async def _startup_event() -> None:
     t = asyncio.create_task(stream_worker_forever())
     logger.info("gRPC aio worker task created (auto-restart enabled)")
     logger.info("🚀 Isolated WebRTC thread started")
-
-    wt = asyncio.create_task(watchdog())
+    if settings.watchdog_enabled:
+        wt = asyncio.create_task(watchdog())
 
 
 @app.get("/", response_class=HTMLResponse)

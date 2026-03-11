@@ -73,5 +73,8 @@ class Settings(BaseSettings):
 
     default_log_level: str = "INFO"
 
+    ffmpeg_debug: bool = False
+    watchdog_enabled: bool = True
+
 # Global settings instance
 settings = Settings() 
