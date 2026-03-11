@@ -532,7 +532,8 @@ async def start_render_task(
         avatar_id: str,
         output_path: Path,
         request_id: UUID4,
-        audio_fmt: str
+        audio_fmt: str,
+        start_ts: float
 ):
     try:
         await local_video_run(
@@ -541,7 +542,8 @@ async def start_render_task(
                 bps=bps,
                 avatar_id=avatar_id,
                 output_path=output_path,
-                audio_fmt=audio_fmt
+                audio_fmt=audio_fmt,
+                start_ts=start_ts
             )
         await TASK_MANAGER.set_status(task_id=str(request_id), status="done")
     except Exception as exc:
@@ -556,6 +558,7 @@ async def render(
         data: RenderRequestData = RenderRequestData(),
         audio: UploadFile = File(None)
 ):
+    start_ts = time.time()
     if TASK_MANAGER.is_locked():
         return JSONResponse(status_code=400, content={
           "error": "SERVER_BUSY",
@@ -596,7 +599,8 @@ async def render(
                 avatar_id=data.avatar,
                 output_path=output_path,
                 request_id=request_id,
-                audio_fmt=audio_fmt
+                audio_fmt=audio_fmt,
+                start_ts=start_ts
             ))
             TASK_MANAGER.set_task(t, job_id=str(request_id))
 

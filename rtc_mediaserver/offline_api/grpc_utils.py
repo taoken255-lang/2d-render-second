@@ -2,6 +2,7 @@ import asyncio
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -222,7 +223,13 @@ def _write_all(stream, data: bytes) -> None:
             raise RuntimeError(f"audio write failed: {written}")
         view = view[written:]
 
-async def local_video_run(audio: bytes, sample_rate: int, bps: int, avatar_id: str, output_path: Path, audio_fmt: str):
+async def local_video_run(audio: bytes,
+                          sample_rate: int,
+                          bps: int,
+                          avatar_id: str,
+                          output_path: Path,
+                          audio_fmt: str,
+                          start_ts: float):
     if not output_path.exists():
         output_path.mkdir(exist_ok=True, parents=True)
     logger.info(f"Output path: {output_path}")
@@ -312,4 +319,5 @@ async def local_video_run(audio: bytes, sample_rate: int, bps: int, avatar_id: s
 
     await cleanup_old_results()
     logger.info(f"Old results cleared")
+    logger.info(f"Request took = {time.time() - start_ts} seconds")
 
