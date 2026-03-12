@@ -41,13 +41,9 @@ class PlayerStreamTrack(MediaStreamTrack):
         self._player = player
         self._count = 0
         self._last_sent_time = 0
-        # Диагностика частоты recv()
         self._recv_count = 0
         self._last_recv_time = 0
         self._recv_times = []
-        # FIX сбалансированные размеры очередей для предотвращения рассинхронизации  
-        # Видео: 5 кадров * 40ms = 200ms буфер
-        # Аудио: 10 чанков * 20ms = 200ms буфер (тот же буфер по времени!)
         self._queue: asyncio.Queue[Tuple[Union[Frame, Packet], float, str | None]] = asyncio.Queue()  # FIX равные буферы по времени
         self._tb = VIDEO_TB if kind == "video" else AUDIO_SETTINGS.audio_tb
         self._period = VIDEO_PTIME if kind == "video" else AUDIO_SETTINGS.audio_ptime
@@ -179,8 +175,8 @@ class WebRTCMediaPlayer:
         self.base = None
         self.next_deadline = None
 
-        audio_sent = 0
-        video_sent = 0
+        audio_queue: asyncio.Queue = self._audio_track._queue
+        video_queue: asyncio.Queue = self._video_track._queue
 
         while not self._quit.is_set():
             if STATE.first_chunk_received:
@@ -188,38 +184,29 @@ class WebRTCMediaPlayer:
                     self.base = time.perf_counter()
                     self.next_deadline = self.base
 
+                if audio_queue.qsize() > 0 or video_queue.qsize() > 0:
+                    self._quit.wait(0.001)
+                    self.next_deadline = time.perf_counter()
+                    continue
+                elif not self._audio_chunks and not self._video_frames:
+                    if not self._load_next_batch():
+                        self._quit.wait(0.001)
+                        self.next_deadline = time.perf_counter()
+                        continue
+
                 now = time.perf_counter()
 
-                global_missed = now - self.base
+                while self._audio_chunks or self._video_frames:
+                    self._push_audio()
+                    self._push_audio()
+                    self._push_video()
+                    break
 
-                audio_chunks = int((global_missed / AUDIO_DT) - audio_sent) + 1
-                video_chunks = int((global_missed / VIDEO_DT) - video_sent) + 1
-
-                while audio_chunks:
-                    if self._push_audio():
-                        audio_sent += 1
-                    else:
-                        break
-                    audio_chunks -= 1
-
-                while video_chunks > 0:
-                    if self._push_video():
-                        video_sent += 1
-                    else:
-                        break
-                    video_chunks -= 1
-
-                self.next_deadline += 0.02
-                sleep_time = self.next_deadline - time.perf_counter()
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
             else:
 
                 self.base = None
                 self._video_frames.clear()
                 self._audio_chunks.clear()
-                audio_sent = 0
-                video_sent = 0
 
     # ───────────────────── Internal helpers ────────────────────────────
     def _load_next_batch(self) -> bool:
@@ -241,8 +228,6 @@ class WebRTCMediaPlayer:
         return True
 
     def _push_audio(self) -> None:
-        if not self._audio_chunks:
-            self._load_next_batch()
         if not self._audio_chunks:
             logger.debug("push_audio: no chunks available")
             return False
@@ -269,10 +254,6 @@ class WebRTCMediaPlayer:
         return True
 
     def _push_video(self) -> None:
-        if not self._video_frames:
-            if not self._load_next_batch():
-                logger.debug("push_video: no frames available")
-                return
         if not self._video_frames:
             logger.debug("push_video: no frames available after batch load")
             return False
