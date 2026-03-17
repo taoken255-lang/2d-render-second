@@ -516,6 +516,7 @@ async def control_ws(websocket: WebSocket):  # type: ignore[override]
 # ───────────────────────── Offline render ───────────────────────────
 class RenderRequestData(BaseModel):
     avatar: str = "iirina"
+    tail_video_name: str | None = None
 
 
 class RenderResponseData(BaseModel):
@@ -533,9 +534,16 @@ async def start_render_task(
         output_path: Path,
         request_id: UUID4,
         audio_fmt: str,
-        start_ts: float
+        tail_video_path: Path | None = None,
 ):
     try:
+        logger.info(
+            "start_render_task request_id=%s avatar=%s output_path=%s tail_video_path=%s",
+            request_id,
+            avatar_id,
+            output_path,
+            tail_video_path,
+        )
         await local_video_run(
                 audio=audio,
                 sample_rate=sample_rate,
@@ -543,12 +551,34 @@ async def start_render_task(
                 avatar_id=avatar_id,
                 output_path=output_path,
                 audio_fmt=audio_fmt,
-                start_ts=start_ts
+                tail_video_path=tail_video_path,
             )
         await TASK_MANAGER.set_status(task_id=str(request_id), status="done")
     except Exception as exc:
         logger.error(exc)
         await TASK_MANAGER.set_status(task_id=str(request_id), status="error")
+
+
+def _resolve_tail_video_path(tail_video_name: str | None) -> Path | None:
+    if not tail_video_name:
+        logger.info("Tail video name is empty, tail concat disabled")
+        return None
+
+    logger.info("Resolving tail video name: %s", tail_video_name)
+    candidate = Path(tail_video_name)
+    # Accept only bare file names without path segments or suffixes.
+    if candidate.name != tail_video_name or candidate.suffix:
+        logger.error("Invalid tail video name: %s", tail_video_name)
+        raise ValueError("Tail video name must not contain directories or extension.")
+
+    resolved = settings.offline_tail_videos_path / f"{tail_video_name}.mp4"
+    logger.info("Resolved tail video path candidate: %s", resolved)
+    if not resolved.exists():
+        logger.error("Tail video file does not exist: %s", resolved)
+        raise FileNotFoundError(f"Tail video is not found: {resolved}")
+
+    logger.info("Tail video file found: %s", resolved)
+    return resolved
 
 @app.post("/render")
 async def render(
@@ -556,9 +586,9 @@ async def render(
         response: Response,
         background_tasks: BackgroundTasks,
         data: RenderRequestData = RenderRequestData(),
-        audio: UploadFile = File(None)
+        audio: UploadFile = File(None),
+        tail_video_name: str = Form(None)
 ):
-    start_ts = time.time()
     if TASK_MANAGER.is_locked():
         return JSONResponse(status_code=400, content={
           "error": "SERVER_BUSY",
@@ -566,6 +596,10 @@ async def render(
         })
     if data.avatar not in settings.offline_avatars:
         data.avatar = "iirina"
+
+    if data.tail_video_name is None:
+        data.tail_video_name = tail_video_name
+
     try:
         if audio is None:
             logger.info("audio is empty")
@@ -575,6 +609,12 @@ async def render(
             })
         else:
             _, audio_ext = os.path.splitext(audio.filename)
+            logger.info(
+                "render request avatar=%s audio_filename=%s tail_video_name=%s",
+                data.avatar,
+                audio.filename,
+                data.tail_video_name,
+            )
             request_audio = await audio.read()
             sample_rate, audio_fmt, mono_audio = wav_to_mono_and_sample_rate(request_audio)
             if not sample_rate or not mono_audio:
@@ -585,6 +625,15 @@ async def render(
                 })
             logger.info(f"Audio size: {len(request_audio)}, SR: {sample_rate}")
             request_id = uuid.uuid4()
+            try:
+                tail_video_path = _resolve_tail_video_path(data.tail_video_name)
+            except (ValueError, FileNotFoundError) as exc:
+                logger.error("Tail video resolve failed: %r", exc)
+                return JSONResponse(status_code=400, content={
+                    "error": "WRONG_INPUT",
+                    "description": str(exc)
+                })
+            logger.info("Tail video path for request_id=%s: %s", request_id, tail_video_path)
 
             if not settings.offline_output_path.exists():
                 settings.offline_output_path.mkdir(exist_ok=True, parents=True)
@@ -600,7 +649,7 @@ async def render(
                 output_path=output_path,
                 request_id=request_id,
                 audio_fmt=audio_fmt,
-                start_ts=start_ts
+                tail_video_path=tail_video_path,
             ))
             TASK_MANAGER.set_task(t, job_id=str(request_id))
 

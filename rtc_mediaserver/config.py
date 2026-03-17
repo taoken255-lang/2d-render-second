@@ -61,6 +61,8 @@ class Settings(BaseSettings):
     bitrate: int = 16_000_000
 
     offline_output_path: Path = Path("offline_data")
+    offline_tail_videos_path: Path = Path("samples")
+    ffmpeg_debug_enabled: bool = False
     offline_results_to_keep: int = 10
     offline_avatars: List[str] = ["iirina"]
 
