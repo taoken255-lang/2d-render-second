@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import grpc
+import numpy as np
 from grpc import aio
 
 from rtc_mediaserver.config import settings
@@ -320,6 +321,7 @@ async def local_video_run(
     frame_size = 0
 
     grpc_started_at = time.time()
+    write_times = []
     try:
         async for idxa, response_chunk in aenumerate(response_stream):
             logger.info("CHUNK %s", idxa)
@@ -342,7 +344,9 @@ async def local_video_run(
                 logger.error("BAD FRAME SIZE idx=%d got=%d expected=%d", frame_count, len(frame), frame_size)
                 raise RuntimeError("frame size mismatch: not raw rgb24 frame")
 
+            t_w = time.time()
             proc.stdin.write(frame)
+            write_times.append(time.time() - t_w)
 
             if proc.poll() is not None:
                 logger.error("ffmpeg died with return code %s", proc.returncode)
@@ -411,3 +415,10 @@ async def local_video_run(
                 grpc_time,
                 concat_time
                 )
+    logger.info(f"Writer stats: p50={np.percentile(write_times, 50)},"
+                f"p90={np.percentile(write_times, 90)},"
+                f"p95={np.percentile(write_times, 95)},"
+                f"min={np.min(write_times)}, max={np.max(write_times)}"
+    )
+
+
