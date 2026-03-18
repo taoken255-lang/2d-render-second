@@ -4,6 +4,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from typing import List
 
 import grpc
 import numpy as np
@@ -322,15 +323,22 @@ async def local_video_run(
 
     grpc_started_at = time.time()
     write_times = []
+    previous_grpc_time: float = None
+    times_between_chunks: List[float] = []
+    loop_t: List[float] = []
     try:
         async for idxa, response_chunk in aenumerate(response_stream):
+            t_start = time.time()
+            if previous_grpc_time:
+                times_between_chunks.append(time.time() - previous_grpc_time)
+            previous_grpc_time = time.time()
             logger.info("CHUNK %s", idxa)
             if response_chunk.WhichOneof("chunk") != "video":
                 logger.info("Skipping non-video chunk idx=%s kind=%s", idxa, response_chunk.WhichOneof("chunk"))
                 continue
 
             frame = response_chunk.video.data
-            logger.info("RECV IMAGE %s %sx%s", frame_count, response_chunk.video.width, response_chunk.video.height)
+            #logger.info("RECV IMAGE %s %sx%s", frame_count, response_chunk.video.width, response_chunk.video.height)
 
             if pipe_ctx is None:
                 frame_width = response_chunk.video.width
@@ -353,6 +361,7 @@ async def local_video_run(
                 raise RuntimeError("ffmpeg died")
 
             frame_count += 1
+            loop_t.append(time.time() - t_start)
 
         grpc_time = time.time() - grpc_started_at
 
@@ -420,5 +429,17 @@ async def local_video_run(
                 f"p95={np.percentile(write_times, 95)},"
                 f"min={np.min(write_times)}, max={np.max(write_times)}"
     )
+
+    logger.info(f"Loop stats: p50={np.percentile(loop_t, 50)},"
+                f"p90={np.percentile(loop_t, 90)},"
+                f"p95={np.percentile(loop_t, 95)},"
+                f"min={np.min(loop_t)}, max={np.max(loop_t)}"
+                )
+
+    logger.info(f"gRPC stats: p50={np.percentile(times_between_chunks, 50)},"
+                f"p90={np.percentile(times_between_chunks, 90)},"
+                f"p95={np.percentile(times_between_chunks, 95)},"
+                f"min={np.min(times_between_chunks)}, max={np.max(times_between_chunks)}"
+                )
 
 
