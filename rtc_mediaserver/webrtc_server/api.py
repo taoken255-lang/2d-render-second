@@ -514,11 +514,6 @@ async def control_ws(websocket: WebSocket):  # type: ignore[override]
 
 
 # ───────────────────────── Offline render ───────────────────────────
-class RenderRequestData(BaseModel):
-    avatar: str = "iirina"
-    tail_video_name: str | None = None
-
-
 class RenderResponseData(BaseModel):
     job_id: UUID4
 
@@ -582,10 +577,8 @@ def _resolve_tail_video_path(tail_video_name: str | None) -> Path | None:
 
 @app.post("/render")
 async def render(
-        request: Request,
         response: Response,
-        background_tasks: BackgroundTasks,
-        data: RenderRequestData = RenderRequestData(),
+        avatar: str = Form(),
         audio: UploadFile = File(None),
         tail_video_name: str = Form(None)
 ):
@@ -594,11 +587,8 @@ async def render(
           "error": "SERVER_BUSY",
           "description": "Server is busy."
         })
-    if data.avatar not in settings.offline_avatars:
-        data.avatar = "iirina"
-
-    if data.tail_video_name is None:
-        data.tail_video_name = tail_video_name
+    if avatar not in settings.offline_avatars:
+        avatar = "iirina"
 
     try:
         if audio is None:
@@ -611,9 +601,9 @@ async def render(
             _, audio_ext = os.path.splitext(audio.filename)
             logger.info(
                 "render request avatar=%s audio_filename=%s tail_video_name=%s",
-                data.avatar,
+                avatar,
                 audio.filename,
-                data.tail_video_name,
+                tail_video_name,
             )
             request_audio = await audio.read()
             sample_rate, audio_fmt, mono_audio = wav_to_mono_and_sample_rate(request_audio)
@@ -626,7 +616,7 @@ async def render(
             logger.info(f"Audio size: {len(request_audio)}, SR: {sample_rate}")
             request_id = uuid.uuid4()
             try:
-                tail_video_path = _resolve_tail_video_path(data.tail_video_name)
+                tail_video_path = _resolve_tail_video_path(tail_video_name)
             except (ValueError, FileNotFoundError) as exc:
                 logger.error("Tail video resolve failed: %r", exc)
                 return JSONResponse(status_code=400, content={
@@ -645,7 +635,7 @@ async def render(
                 audio=mono_audio,
                 sample_rate=sample_rate,
                 bps=16,
-                avatar_id=data.avatar,
+                avatar_id=avatar,
                 output_path=output_path,
                 request_id=request_id,
                 audio_fmt=audio_fmt,

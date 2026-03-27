@@ -64,7 +64,8 @@ class Settings(BaseSettings):
     offline_tail_videos_path: Path = Path("samples")
     ffmpeg_debug_enabled: bool = False
     offline_results_to_keep: int = 10
-    offline_avatars: List[str] = ["iirina"]
+    offline_avatars: List[str] = ["iirina", "iirina_acquisition"]
+    offline_warmup: bool = False
 
     turn_enabled: bool = False
     turn_server: str = "87.242.91.109:19303"
