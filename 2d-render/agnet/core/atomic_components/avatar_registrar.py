@@ -101,6 +101,15 @@ class AvatarRegistrar:
         if cache_dir_was_missing:
             logger.info(f"Created cache dir '{self.cache_dir}'")
 
+    @staticmethod
+    def _raise_source2info_error(source_path, frame_idx, exc):
+        message = (
+            f"AvatarRegistrar: source2info failed at frame_idx={frame_idx} "
+            f"for source_path='{source_path}': {exc}"
+        )
+        logger.exception(message)
+        raise RuntimeError(message) from exc
+
     def _get_cache_key(self, source_path):
         h = hashlib.md5()
         with open(source_path, "rb") as f:
@@ -227,8 +236,11 @@ class AvatarRegistrar:
             is_image_flag = True
             with t_avatar.measure("avatar_video_processing"):
                 rgb = load_image(source_path, max_dim)
-                for rgb in tqdm([rgb], desc='register avatar'):
-                    info = self.source2info(rgb, last_lmk, **kwargs)
+                for frame_idx, rgb in enumerate(tqdm([rgb], desc='register avatar')):
+                    try:
+                        info = self.source2info(rgb, last_lmk, **kwargs)
+                    except Exception as e:
+                        self._raise_source2info_error("<image_bytes>", frame_idx, e)
                     for k in keys:
                         source_info[f"{k}_lst"].append(info[k])
                     source_info["img_rgb_lst"].append(rgb)
@@ -297,23 +309,27 @@ class AvatarRegistrar:
                 new_h, new_w, rsz_flag = None, None, None
                 try:
                     pbar = tqdm(desc='register avatar')
-                    for idx, frame_rgb in enumerate(reader):
-                        if n_frames > 0 and idx >= n_frames:
-                            break
-                        if rsz_flag is None:
-                            h, w = frame_rgb.shape[:2]
-                            new_h, new_w, rsz_flag = check_resize(h, w, max_dim)
-                        if rsz_flag:
-                            frame_rgb = cv2.resize(frame_rgb, (new_w, new_h))
+                    try:
+                        for idx, frame_rgb in enumerate(reader):
+                            if n_frames > 0 and idx >= n_frames:
+                                break
+                            if rsz_flag is None:
+                                h, w = frame_rgb.shape[:2]
+                                new_h, new_w, rsz_flag = check_resize(h, w, max_dim)
+                            if rsz_flag:
+                                frame_rgb = cv2.resize(frame_rgb, (new_w, new_h))
+                            try:
+                                info = self.source2info(frame_rgb, last_lmk, **kwargs)
+                            except Exception as e:
+                                self._raise_source2info_error(source_path, idx, e)
 
-                        info = self.source2info(frame_rgb, last_lmk, **kwargs)
-
-                        info['f_s'] = torch.from_numpy(info['f_s'].astype(np.float16))
-                        for k in keys:
-                            source_info[f"{k}_lst"].append(info[k])
-                        last_lmk = info["lmk203"]
-                        pbar.update()
-                    pbar.close()
+                            info['f_s'] = torch.from_numpy(info['f_s'].astype(np.float16))
+                            for k in keys:
+                                source_info[f"{k}_lst"].append(info[k])
+                            last_lmk = info["lmk203"]
+                            pbar.update()
+                    finally:
+                        pbar.close()
                 finally:
                     try:
                         reader.close()

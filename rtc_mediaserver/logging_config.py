@@ -40,7 +40,7 @@ def _create_handlers(log_file: Optional[str] = None) -> list:
     
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(settings.default_log_level)
     handlers.append(console_handler)
     
     # File handler (if log_file is specified)
