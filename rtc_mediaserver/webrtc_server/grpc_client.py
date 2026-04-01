@@ -94,13 +94,13 @@ async def stream_worker_aio() -> None:
                     if audio_sec is None and sr is None:
                         logger.debug(f"Got EOS marker - gen silence")
                         if speech_sended:
-
                             speech_sended = False
                             event = ServiceEvents.EOS if not interrupted else ServiceEvents.INTERRUPT
                             logger.debug(f"EVENT push from 1 {event}")
                         audio_sec, sr = np.zeros(CHUNK_SAMPLES, dtype=np.int16), AUDIO_SETTINGS.sample_rate
                         is_speech = False
                     else:
+                        logger.info(f"Send audio from grpc")
                         n = audio_sec.shape[0]
                         if n < CHUNK_SAMPLES:
                             pad = np.zeros(CHUNK_SAMPLES - n, dtype=np.int16)
@@ -111,10 +111,10 @@ async def stream_worker_aio() -> None:
                         speech_sended = True
                         is_speech = True
                 else:
-                    if speech_sended:
-                        speech_sended = False
-                        event = None if not interrupted else ServiceEvents.INTERRUPT
-                        logger.debug(f"EVENT push from 2 {event}")
+                    # if speech_sended:
+                    #     speech_sended = False
+                    #     event = None if not interrupted else ServiceEvents.INTERRUPT
+                    #     logger.debug(f"EVENT push from 2 {event}")
                     audio_sec, sr = np.zeros(CHUNK_SAMPLES, dtype=np.int16), AUDIO_SETTINGS.sample_rate
                     is_speech = False
 
@@ -131,7 +131,8 @@ async def stream_worker_aio() -> None:
                     evt, evt_payload = COMMANDS_QUEUE.get_nowait()
                     if evt == ServiceEvents.SET_ANIMATION:
                         logger.warning(f"Request -> Playing animation {evt_payload}")
-                        yield render_service_pb2.RenderRequest(play_animation=render_service_pb2.PlayAnimation(animation=evt_payload, auto_idle=STATE.auto_idle))
+                        animation, is_quick = evt_payload
+                        yield render_service_pb2.RenderRequest(play_animation=render_service_pb2.PlayAnimation(animation=animation, is_quick=is_quick, auto_idle=STATE.auto_idle))
                     elif evt == ServiceEvents.SET_EMOTION:
                         logger.warning(f"Request -> set emotion {evt_payload}")
                         yield render_service_pb2.RenderRequest(
@@ -149,7 +150,6 @@ async def stream_worker_aio() -> None:
 
                 await asyncio.sleep(0)
 
-            logger.info("Sender exited")
         except BaseException as e:
             logger.error(f"Sender error {e!r}")
             import traceback
@@ -161,6 +161,7 @@ async def stream_worker_aio() -> None:
     prev_emotion = None
     try:
         t_start = time.time()
+        was_muted = False
         async for chunk in stub.RenderStream(sender_generator()):
             if chunk.WhichOneof("chunk") == "video":
                 STATE.first_chunk_received = True
@@ -187,8 +188,20 @@ async def stream_worker_aio() -> None:
                     if pending_audio:
                         audio_chunk, _sr, event, is_speech, is_interrupt = pending_audio.popleft()
 
+                        logger.debug(f"{frame_idx} pending_audio.popleft() got {event}, {is_speech}, {is_interrupt}")
+
                         if is_muted:
+                            if not was_muted:
+                                USER_EVENTS.put_nowait({"type": "interrupted"})
+                                INTERRUPT_CALLED.clear()
+                                logger.debug(f"{frame_idx} EVENT Interrupted from MUTED")
+                                event = None
+                                was_muted = True
+
                             audio_chunk = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+                        else:
+                            if was_muted:
+                                was_muted = False
 
                         event_to_send = None
                         if event and event == ServiceEvents.EOS:
@@ -198,7 +211,7 @@ async def stream_worker_aio() -> None:
                             USER_EVENTS.put_nowait({"type": "interrupted"})
                             INTERRUPT_CALLED.clear()
                             event_to_send = None
-                            logger.debug(f"EVENT Interrupted, event_to_send = None")
+                            logger.debug(f"{frame_idx} EVENT Interrupted, event_to_send = None")
 
                         if settings.fast_interrupts_enabled and STATE.chunks_to_skip > 0:
                             STATE.chunks_to_skip =- 1

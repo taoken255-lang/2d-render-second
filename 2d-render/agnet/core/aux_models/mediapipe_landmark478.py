@@ -1,5 +1,6 @@
 from enum import Enum
 import numpy as np
+from loguru import logger
 
 from ..utils.load_model import load_model
 from .blaze_face import BlazeFace
@@ -69,7 +70,7 @@ class Landmark478:
     def get(self, image):
         bboxes = self.blaze_face(image)
         if len(bboxes) == 0:
-            return None
+            raise ValueError("Landmark478: BlazeFace found no face in cropped frame")
         bbox = bboxes[0]
         scale = (image.shape[1] / 128.0, image.shape[0] / 128.0)
 
@@ -104,6 +105,8 @@ class Landmark478:
         )
 
         mesh = self.face_mesh(image, roi)
+        if mesh is None:
+            raise ValueError("Landmark478: FaceMesh found no landmarks in cropped frame")
         mesh = mesh / (image.shape[1], image.shape[0], image.shape[1])
         return mesh
 
@@ -111,8 +114,13 @@ class Landmark478:
         if self.model_type == "ori":
             det = self.model.detect_from_npimage(image.copy())
             lmk = self.model.mplmk_to_nplmk(det)
+            if lmk is None:
+                raise ValueError("Landmark478: original model returned no landmarks")
             return lmk
         else:
             lmk = self.get(image)
+            if lmk is None:
+                logger.error("Landmark478: got no landmarks before reshape")
+                raise ValueError("Landmark478: no landmarks returned")
             lmk = lmk.reshape(1, -1, 3).astype(np.float32)
             return lmk

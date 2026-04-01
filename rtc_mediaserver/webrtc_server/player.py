@@ -28,7 +28,22 @@ __all__ = [
     "WebRTCMediaPlayer",
 ]
 
-TIME_SPAN = 0.02
+class RecvSync:
+    _recv_count = 3
+    _condition = threading.Condition()
+
+    @classmethod
+    def recv_done(cls) -> None:
+        cls._recv_count -= 1
+        if not cls._recv_count:
+            cls._recv_count = 3
+            with cls._condition:
+                cls._condition.notify_all()
+
+    @classmethod
+    def wait(cls):
+        with cls._condition:
+            cls._condition.wait()
 
 class PlayerStreamTrack(MediaStreamTrack):
     """Custom aiortc track that pulls frames from an internal queue."""
@@ -84,15 +99,14 @@ class PlayerStreamTrack(MediaStreamTrack):
             async def send_event(evt: str):
                 logging.debug(f"Send event {event}")
                 USER_EVENTS.put_nowait({"type": event})
-                if event == "eos":
-                    STATE.zero_perf_timer()
                 await asyncio.sleep(0)
             asyncio.run_coroutine_threadsafe(send_event(event), self._player.main_loop)
-
 
         frame.pts = self._pts
         frame.time_base = self._tb
         self.idx += 1
+
+        RecvSync.recv_done()
 
         return frame
 
@@ -184,17 +198,21 @@ class WebRTCMediaPlayer:
                     self.base = time.perf_counter()
                     self.next_deadline = self.base
 
-                if audio_queue.qsize() > 0 or video_queue.qsize() > 0:
-                    self._quit.wait(0.001)
-                    self.next_deadline = time.perf_counter()
-                    continue
-                elif not self._audio_chunks and not self._video_frames:
-                    if not self._load_next_batch():
-                        self._quit.wait(0.001)
-                        self.next_deadline = time.perf_counter()
-                        continue
+                # if audio_queue.qsize() > 0 or video_queue.qsize() > 0:
+                #     self._quit.wait(0.001)
+                #     self.next_deadline = time.perf_counter()
+                #     continue
+                # elif not self._audio_chunks and not self._video_frames:
+                #     if not self._load_next_batch():
+                #         self._quit.wait(0.001)
+                #         self.next_deadline = time.perf_counter()
+                #         continue
 
-                now = time.perf_counter()
+                if audio_queue.qsize() > 0 or video_queue.qsize() > 0:
+                    RecvSync.wait()
+
+                self._load_next_batch()
+                self.next_deadline = time.perf_counter()
 
                 while self._audio_chunks or self._video_frames:
                     self._push_audio()
@@ -209,11 +227,11 @@ class WebRTCMediaPlayer:
                 self._audio_chunks.clear()
 
     # ───────────────────── Internal helpers ────────────────────────────
-    def _load_next_batch(self) -> bool:
+    def _load_next_batch(self) -> None:
         """Pop next synced batch (1 sec audio + 25 frames) from queue."""
 
-        if SYNC_QUEUE.empty():
-            return False
+        if self._audio_chunks and self._video_frames:
+            return
 
         audio_sec, frames25, evt_to_send = SYNC_QUEUE.get()
 
@@ -224,8 +242,6 @@ class WebRTCMediaPlayer:
         for i in frames25:
             frame, idx = i
             self._video_frames.append((frame, idx, evt_to_send if evt_to_send == "interrupted" else None))
-
-        return True
 
     def _push_audio(self) -> None:
         if not self._audio_chunks:

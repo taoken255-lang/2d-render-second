@@ -28,6 +28,7 @@ class OfferRequest:
     sdp: str
     type: str
     session_id: int
+    turn: bool
 
 @dataclass  
 class OfferResponse:
@@ -168,9 +169,7 @@ class WebRTCManager:
         while self.running:
             try:
                 # Ждем запрос с таймаутом
-                request, future = await asyncio.wait_for(
-                    self.request_queue.get(), timeout=1.0
-                )
+                request, future = await self.request_queue.get()
                 
                 # Обрабатываем offer
                 try:
@@ -187,10 +186,6 @@ class WebRTCManager:
                     self.webrtc_loop.call_soon_threadsafe(
                         future.set_result, error_response
                     )
-                    
-            except asyncio.TimeoutError:
-                # Таймаут - продолжаем цикл
-                continue
             except Exception as e:
                 logger.error(f"WebRTC main loop error: {e}")
                 
@@ -200,20 +195,21 @@ class WebRTCManager:
         """Обработка WebRTC offer в изолированном потоке"""
         try:
             offer = RTCSessionDescription(sdp=request.sdp, type=request.type)
-            if not settings.turn_enabled:
-                pc = RTCPeerConnection()
-            else:
+            use_turn = settings.turn_enabled or request.turn
+            if use_turn:
                 pc = RTCPeerConnection(
                     RTCConfiguration(
                         iceServers=[
                             RTCIceServer(
-                                urls=f"turn:{settings.turn_server}?transport=tcp",
+                                urls=f"turn:{settings.turn_server}?transport=udp",
                                 username=settings.turn_login,
                                 credential=settings.turn_password,
                             )
                         ]
                     )
                 )
+            else:
+                pc = RTCPeerConnection()
 
             # Создаем медиа плеер в WebRTC потоке
             player = WebRTCMediaPlayer()
@@ -329,7 +325,7 @@ class WebRTCManager:
 
                 await pc.close()
 
-    async def process_offer_async(self, offer_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def process_offer_async(self, offer_data: Dict[str, Any], turn: bool = False) -> Dict[str, Any]:
         """Публичный метод для обработки offer из FastAPI потока"""
         if not self.running or not self.webrtc_loop:
             raise RuntimeError("WebRTC thread not running")
@@ -339,7 +335,8 @@ class WebRTCManager:
         request = OfferRequest(
             sdp=offer_data["sdp"],
             type=offer_data["type"], 
-            session_id=session_id
+            session_id=session_id,
+            turn=turn
         )
         
         # Создаем Future для результата

@@ -219,6 +219,7 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 		render = None
 		stream_thread = None
 		infer_start_sent = False
+		current_avatar_name = None
 
 		# Wall-clock stage points are forwarded to the main process for an authoritative per-request timeline.
 		def send_wall_point(point_name: str):
@@ -346,6 +347,7 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 					send_wall_point("avatar_ready")
 
 					logger.info("START STREAMING THREAD")
+					current_avatar_name = avatar_name
 					video_queue.put(EventObject(event_name="avatar_set", event_data={"avatar_id": avatar_name, "width": img_width, "height": img_height}))
 					stream_thread = Thread(target=stream_frames_thread, args=(
 						render, video_queue, img_height, img_width, start_time, request_id,))
@@ -354,11 +356,19 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 
 				elif chunk.data.command_type == CommandDataType.PlayAnimation:
 					animation_name = chunk.data.command_data
-					if animation_name not in get_avatars()[avatar_name]["animations"]:
+					if current_avatar_name is None:
 						video_queue.put(ErrorObject(error_type=ErrorDataType.Animation,
-						                            error_message=f"Animation {animation_name} for avatar {avatar_name} does not exist"))
+						                            error_message="PlayAnimation requires an active avatar from set_avatar"))
 						continue
-					render.play_animation(animation=chunk.data.command_data, auto_idle=chunk.data.additional_data["auto_idle"])
+					if animation_name not in get_avatars()[current_avatar_name]["animations"]:
+						video_queue.put(ErrorObject(error_type=ErrorDataType.Animation,
+						                            error_message=f"Animation {animation_name} for avatar {current_avatar_name} does not exist"))
+						continue
+					render.play_animation(
+						animation=chunk.data.command_data,
+						auto_idle=chunk.data.additional_data["auto_idle"],
+						is_quick=chunk.data.additional_data.get("is_quick", False),
+					)
 
 				elif chunk.data.command_type == CommandDataType.SetEmotion:
 					render.set_emotion(emotion=chunk.data.command_data)
@@ -483,7 +493,10 @@ def reader_thread(request_iterator, audio_queue, video_queue, is_online, is_alph
 					audio_queue.put(IPCObject(data_type=IPCDataType.COMMAND,
 					                          data=CommandObject(command_type=CommandDataType.PlayAnimation,
 					                                             command_data=chunk.play_animation.animation,
-					                                             additional_data={"auto_idle": chunk.play_animation.auto_idle})))
+					                                             additional_data={
+						                                             "auto_idle": chunk.play_animation.auto_idle,
+						                                             "is_quick": chunk.play_animation.is_quick,
+					                                             })))
 
 				elif chunk.WhichOneof("command") == "set_emotion":
 					audio_queue.put(IPCObject(data_type=IPCDataType.COMMAND,
@@ -838,13 +851,20 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 			except BaseException as e:
 				logger.exception(f"GOT BASEEXCEPTION IN RENDER STREAM {str(e)} START CLOSING PROCESS")
 			video_queue.put(ImageObject(data=None, height=None, width=None))
-			logger.info(f"START JOINING PROCESS")
-			render_process.terminate()
-			logger.info(f"PROCESS FINISHED")
+			logger.info("START JOINING PROCESS")
+			render_process.join(timeout=2.0)
+			if render_process.is_alive():
+				logger.warning("PROCESS STILL ALIVE AFTER JOIN TIMEOUT, TERMINATING")
+				render_process.terminate()
+				render_process.join(timeout=2.0)
+			logger.info("PROCESS FINISHED")
 			reader_trd.join()
 			logger.info(f"READER FINISHED")
-			mqueue_trd.join()
-			logger.info(f"MQUEUE FINISHED")
+			mqueue_trd.join(timeout=5.0)
+			if mqueue_trd.is_alive():
+				logger.warning("MQUEUE THREAD STILL ALIVE AFTER JOIN TIMEOUT")
+			else:
+				logger.info("MQUEUE FINISHED")
 			# logger.info(f"MIN CHUNK TIME: {min_time}")
 			# logger.info(f"MAX CHUNK TIME: {max_time}")
 			# if chunk_counter != 0:

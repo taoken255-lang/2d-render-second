@@ -57,10 +57,14 @@ class RenderService:
 	def set_avatar(self, avatar_id: str):
 		pass
 
-	def play_animation(self, animation: str, auto_idle: bool):
-		self.render_object(render_object=RenderAnimationObject(render_data=(animation, auto_idle)))
-		# self.animation_to_play.append((animation, auto_idle))
-		logger.info(f"animation got: {animation} auto idle: {auto_idle}")
+	def play_animation(self, animation: str, auto_idle: bool, is_quick: bool = False):
+		# The default path stays synchronized with audio2motion timing.
+		# The fast path is opt-in via the gRPC is_quick flag.
+		if is_quick:
+			self.sdk.add_video_segment((animation, auto_idle))
+		else:
+			self.render_object(render_object=RenderAnimationObject(render_data=(animation, auto_idle)))
+		logger.info(f"animation got: {animation} auto idle: {auto_idle} is_quick: {is_quick}")
 
 	def set_emotion(self, emotion: str):
 		self.render_object(render_object=RenderEmotionObject(render_data=emotion))
@@ -74,12 +78,16 @@ class RenderService:
 	def interrupt(self):
 		self.sdk.interrupt_state.interrupt()
 
+	def _resolve_sampling_timesteps(self):
+		if self.sampling_timestamps != 0:
+			return int(self.sampling_timestamps), "request"
+		if self.is_online:
+			return int(Config.ONLINE_STREAMING_TIMESTAMPS), "env_online"
+		return int(Config.ONLINE_RENDER_TIMESTAMPS), "env_render"
+
 	def handle_image(self, image_chunk, video_queue: Queue):
 		try:
-			if self.sampling_timestamps != 0:
-				sts = self.sampling_timestamps
-			else:
-				sts = int(Config.ONLINE_STREAMING_TIMESTAMPS) if self.is_online else int(Config.ONLINE_RENDER_TIMESTAMPS)
+			sts, sampling_source = self._resolve_sampling_timesteps()
 
 			args = {"online_mode": self.is_online,
 			        "sampling_timesteps": sts,
@@ -87,6 +95,11 @@ class RenderService:
 			        "QUEUE_MAX_SIZE": int(Config.QUEUE_MAX_SIZE),
 			        "MS_MAX_SIZE": int(Config.MS_MAX_SIZE),
 			        "A2M_MAX_SIZE": int(Config.A2M_MAX_SIZE)}
+			logger.info(
+				f"[SETUP] image sampling_timesteps={args['sampling_timesteps']} "
+				f"source={sampling_source} request_sampling={self.sampling_timestamps} "
+				f"env_online={Config.ONLINE_STREAMING_TIMESTAMPS} env_render={Config.ONLINE_RENDER_TIMESTAMPS}"
+			)
 			self.sdk.setup(source_path=image_chunk, output_path="", **args)
 		except Exception as e:
 			logger.info(f"ERROR WHILE HANDLING IMAGE {str(e)}")
@@ -103,10 +116,7 @@ class RenderService:
 	        idle_name: str = "idle"
 	):
 		try:
-			if self.sampling_timestamps != 0:
-				sts = self.sampling_timestamps
-			else:
-				sts = int(Config.ONLINE_STREAMING_TIMESTAMPS) if self.is_online else int(Config.ONLINE_RENDER_TIMESTAMPS)
+			sts, sampling_source = self._resolve_sampling_timesteps()
 
 			args = {"online_mode": True,
 			        "video_segments_path": f"{base_path}/{avatar_name}.json",
@@ -121,9 +131,13 @@ class RenderService:
 			if agnet_config:
 				logger.info(agnet_config)
 			args.update(agnet_config)
-			if sts == 5:
-				args["sampling_timesteps"] = 5
-
+			if agnet_config and "sampling_timesteps" in agnet_config:
+				sampling_source = "avatar_config"
+			logger.info(
+				f"[SETUP] avatar={avatar_name} sampling_timesteps={args['sampling_timesteps']} "
+				f"source={sampling_source} request_sampling={self.sampling_timestamps} "
+				f"env_online={Config.ONLINE_STREAMING_TIMESTAMPS} env_render={Config.ONLINE_RENDER_TIMESTAMPS}"
+			)
 			self.sdk.setup(source_path=f"{base_path}/{avatar_name}.mp4", output_path="", **args)
 		except Exception as e:
 			logger.info(f"ERROR WHILE HANDLING VIDEO {str(e)}")
