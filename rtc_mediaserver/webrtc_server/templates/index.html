@@ -122,6 +122,16 @@
         </select>
         <label for="auto_idle">Auto Idle:</label>
         <input id="auto_idle" type="checkbox" checked />
+        <label for="quick_animation">Quick Animation:</label>
+        <input id="quick_animation" type="checkbox" />
+    </div>
+
+    <div style="margin-top: 10px;">
+        <label for="bitrate">Bitrate:</label>
+        <input type="number" id="bitrate" min="1" step="1000" value="1000000">
+        <label for="use_turn">Use TURN:</label>
+        <input id="use_turn" type="checkbox" />
+        <span id="fpsBox" style="margin-left: 12px; font-weight: bold;">FPS: --</span>
     </div>
 
     <div style="margin-top:15px">
@@ -153,6 +163,10 @@
 let ws = null;
 let pc = null;
 let infoData = null;
+let fpsFrameCount = 0;
+let fpsLastTick = 0;
+let fpsRafToken = null;
+let fpsInterval = null;
 
 const S = id => document.getElementById(id);
 
@@ -163,7 +177,18 @@ const addLog = msg => {
     log.scrollTop = log.scrollHeight;
 };
 
-function setBtns({ws = null, rtc = null, init = null, audio = null, interrupt = null, avatar = null, animation = null, emotion = null, synthesize = null}) {
+function setBtns({
+    ws = null,
+    rtc = null,
+    init = null,
+    audio = null,
+    interrupt = null,
+    avatar = null,
+    animation = null,
+    emotion = null,
+    synthesize = null,
+    interruptAnimation = null
+}) {
     if (ws !== null) S('wsBtn').disabled = ws;
     if (rtc !== null) S('rtcBtn').disabled = rtc;
     if (init !== null) S('initBtn').disabled = init;
@@ -173,6 +198,7 @@ function setBtns({ws = null, rtc = null, init = null, audio = null, interrupt = 
     if (animation !== null) S('playAnimationBtn').disabled = animation;
     if (emotion !== null) S('setEmotionBtn').disabled = emotion;
     if (synthesize !== null) S('synthesizeSpeechBtn').disabled = synthesize;
+    if (interruptAnimation !== null) S('interruptAnimationBtn').disabled = interruptAnimation;
 }
 
 const status = (txt, err = false) => {
@@ -180,6 +206,69 @@ const status = (txt, err = false) => {
     S('status').className = 'status' + (err ? ' error' : '');
     addLog(txt);
 };
+
+function setFps(value) {
+    S('fpsBox').textContent = `FPS: ${value}`;
+}
+
+function resetFps() {
+    fpsFrameCount = 0;
+    fpsLastTick = 0;
+    setFps('--');
+}
+
+function stopFpsTracking() {
+    const video = S('vid');
+    if (fpsRafToken !== null && typeof video.cancelVideoFrameCallback === 'function') {
+        video.cancelVideoFrameCallback(fpsRafToken);
+    }
+    fpsRafToken = null;
+    if (fpsInterval !== null) {
+        clearInterval(fpsInterval);
+        fpsInterval = null;
+    }
+    resetFps();
+}
+
+function startFpsTracking() {
+    stopFpsTracking();
+    const video = S('vid');
+    fpsLastTick = performance.now();
+
+    if (typeof video.requestVideoFrameCallback === 'function') {
+        const onFrame = (_now, metadata) => {
+            if (metadata.presentedFrames > 1 && metadata.mediaTime > 0) {
+                const elapsed = Math.max(0.001, (performance.now() - fpsLastTick) / 1000);
+                const fps = Math.max(0, fpsFrameCount / elapsed);
+                setFps(fps.toFixed(1));
+            }
+            fpsFrameCount += 1;
+            const now = performance.now();
+            if (now - fpsLastTick >= 1000) {
+                const elapsed = Math.max(0.001, (now - fpsLastTick) / 1000);
+                const fps = fpsFrameCount / elapsed;
+                setFps(fps.toFixed(1));
+                fpsFrameCount = 0;
+                fpsLastTick = now;
+            }
+            fpsRafToken = video.requestVideoFrameCallback(onFrame);
+        };
+        fpsRafToken = video.requestVideoFrameCallback(onFrame);
+        return;
+    }
+
+    let lastDecodedFrames = 0;
+    fpsInterval = setInterval(() => {
+        const quality = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+        if (!quality) {
+            return;
+        }
+        const total = quality.totalVideoFrames || 0;
+        const fps = Math.max(0, total - lastDecodedFrames);
+        lastDecodedFrames = total;
+        setFps(fps.toFixed(1));
+    }, 1000);
+}
 
 // Load info data from server
 async function loadInfoData() {
@@ -287,9 +376,21 @@ function onAvatarChange() {
 
 window.addEventListener('DOMContentLoaded', () => {
     // At start WS not connected, WebRTC may be established any time
-    setBtns({ws: false, rtc: false, init: true, audio: true, interrupt: true, avatar: true, emotion: true, animation: true, synthesize: true});
+    setBtns({
+        ws: false,
+        rtc: false,
+        init: true,
+        audio: true,
+        interrupt: true,
+        avatar: true,
+        emotion: true,
+        animation: true,
+        synthesize: true,
+        interruptAnimation: true
+    });
     // Load info data and populate selects
     loadInfoData();
+    resetFps();
 });
 
 function connectWS() {
@@ -297,13 +398,22 @@ function connectWS() {
     ws = new WebSocket(`${protocol}//${location.host}/ws`);
     ws.onopen = () => {
         status('WS connected');
-        setBtns({ws: true, rtc: false, init: false});
+        setBtns({ws: true, rtc: false, init: false, interruptAnimation: true});
     };
     ws.onmessage = ev => {
         const msg = JSON.parse(ev.data);
         if (msg.type === 'ready') {
             status('Session ready: ' + msg.sessionId);
-            setBtns({init: true, audio: false, interrupt: false, avatar: false, emotion: false, animation: false, synthesize: false});
+            setBtns({
+                init: true,
+                audio: false,
+                interrupt: false,
+                avatar: false,
+                emotion: false,
+                animation: false,
+                synthesize: false,
+                interruptAnimation: false
+            });
         } else if (msg.type === 'error') {
             status(`Error: ${msg.message}`, true);
         } else {
@@ -317,7 +427,18 @@ function connectWS() {
     ws.onclose = () => {
         status('WS closed');
         // Reset to initial: allow reconnect WS and WebRTC
-        setBtns({ws: false, rtc: false, init: true, audio: true, interrupt: true, avatar: true, emotion: true, animation: true, synthesize: true});
+        setBtns({
+            ws: false,
+            rtc: false,
+            init: true,
+            audio: true,
+            interrupt: true,
+            avatar: true,
+            emotion: true,
+            animation: true,
+            synthesize: true,
+            interruptAnimation: true
+        });
     };
 }
 
@@ -325,12 +446,34 @@ async function connectWebRTC() {
     try {
         status('Connecting WebRTC');
         setBtns({rtc: true});
-        pc = new RTCPeerConnection();
+        stopFpsTracking();
+        if (pc) {
+            try {
+                pc.close();
+            } catch (e) {
+                console.warn('Failed to close previous RTCPeerConnection', e);
+            }
+        }
+        const useTurn = S('use_turn').checked;
+        const rtcConfig = useTurn ? {
+            iceServers: [
+                {
+                    urls: [
+                        'turn:87.242.91.109:19303?transport=udp',
+                        'turn:87.242.91.109:19303?transport=tcp'
+                    ],
+                    username: 'iiTh7jijiemu',
+                    credential: 'aoGheibiaz5u'
+                }
+            ],
+            iceTransportPolicy: 'relay'
+        } : undefined;
+        pc = new RTCPeerConnection(rtcConfig);
         // pc = new RTCPeerConnection({
         //   iceServers: [
         //     {
         //       urls: [
-        //         'turn:87.242.91.109:19303?transport=tcp',
+        //         'turn:87.242.91.109:19303?transport=udp',
         //       ],
         //       username: 'iiTh7jijiemu',
         //       credential: 'aoGheibiaz5u',
@@ -344,21 +487,36 @@ async function connectWebRTC() {
         pc.ontrack = e => {
             if (e.track.kind === 'video') {
                 S('vid').srcObject = e.streams[0];
+                startFpsTracking();
+            }
+        };
+        pc.onconnectionstatechange = () => {
+            if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+                stopFpsTracking();
             }
         };
         await pc.setLocalDescription(await pc.createOffer());
-        const res = await fetch('/offer', {
+        const bitrate = parseInt(S('bitrate').value, 10) || 1000000;
+        const offerUrl = new URL('/offer', window.location.origin);
+        offerUrl.searchParams.set('bitrate', String(bitrate));
+        offerUrl.searchParams.set('turn', String(useTurn));
+        const res = await fetch(offerUrl.toString(), {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(pc.localDescription)
         });
-        await pc.setRemoteDescription(await res.json());
+        const answer = await res.json();
+        if (!res.ok) {
+            throw new Error(answer.message || `HTTP ${res.status}`);
+        }
+        await pc.setRemoteDescription(answer);
         status('WebRTC connected');
         // Disable RTC button to prevent reconnect attempts but keep others intact
         setBtns({rtc: true});
     } catch (e) {
         console.error(e);
         status('WebRTC error', true);
+        stopFpsTracking();
         setBtns({rtc: false});
     }
 }
@@ -494,7 +652,13 @@ function sendSetAvatar() {
 function sendPlayAnimation() {
     const sel = document.getElementById('animation').value;
     const auto_idle_cb = document.getElementById('auto_idle');
-    ws.send(JSON.stringify({type: 'playAnimation', animation: sel, auto_idle: auto_idle_cb.checked}));
+    const quick_animation_cb = document.getElementById('quick_animation');
+    ws.send(JSON.stringify({
+        type: 'playAnimation',
+        animation: sel,
+        auto_idle: auto_idle_cb.checked,
+        is_quick: quick_animation_cb.checked
+    }));
     status('playAnimation sent');
     addLog('playAnimation sent');
     // keep audio button enabled to continue? Up to spec keep enabled

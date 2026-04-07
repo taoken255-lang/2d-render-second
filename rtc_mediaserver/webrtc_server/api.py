@@ -338,7 +338,10 @@ async def process_offer(params: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 @app.post("/offer")
-async def offer(request: Request):  # type: ignore[override]
+async def offer(request: Request,
+                bitrate: int = settings.bitrate,
+                turn: bool = settings.turn_enabled
+                ):  # type: ignore[override]
     webrtc_manager.main_loop = asyncio.get_running_loop()
 
     # Check Content-Type header
@@ -360,14 +363,18 @@ async def offer(request: Request):  # type: ignore[override]
                 await STATE.current_pc.close()
             except BaseException as e:
                 logger.error(e)
-        # return JSONResponse(status_code=423, content=
-        #     {
-        #       "type": "error",
-        #       "code": "SERVICE_BUSY",
-        #       "message": "Reached max count of connected clients. Service busy."
-        #     }
-        # )
-    
+
+    if bitrate:
+        logger.info(f"Bitrate set to {bitrate} kbps")
+        import aiortc.codecs.h264
+
+        setattr(aiortc.codecs.h264, "DEFAULT_BITRATE", bitrate)
+        setattr(aiortc.codecs.h264, "MAX_BITRATE", bitrate)
+        setattr(aiortc.codecs.h264, "MIN_BITRATE", bitrate)
+
+    if turn:
+        logger.info(f"TURN enabled")
+
     try:
         params = await request.json()
     except JSONDecodeError:
@@ -396,7 +403,7 @@ async def offer(request: Request):  # type: ignore[override]
     try:
         # 🚀 Используем изолированный WebRTC поток
         logger.info("Processing WebRTC offer in isolated thread")
-        answer_dict = await webrtc_manager.process_offer_async(params)
+        answer_dict = await webrtc_manager.process_offer_async(params, turn)
         logger.info("WebRTC offer processed successfully")
         return JSONResponse(answer_dict)
     except Exception as e:

@@ -30,21 +30,22 @@ logger = get_logger(__name__)
 from rtc_mediaserver.webrtc_server import app  # noqa: E402  (import after logging setup)
 
 async def warm_up():
-    from rtc_mediaserver.offline_api.grpc_utils import local_video_run
-    sample_rate = 16000
-    bps = 16
-    warmup_audio = b"\x00" * sample_rate * (bps // 8)  # 1 сек тишины s16le mono
+    if settings.offline_warmup:
+        from rtc_mediaserver.offline_api.grpc_utils import local_video_run
+        sample_rate = 16000
+        bps = 16
+        warmup_audio = b"\x00" * sample_rate * (bps // 8)  # 1 сек тишины s16le mono
 
-    for avatar in settings.offline_avatars:
-        await local_video_run(
-            audio=warmup_audio,
-            sample_rate=sample_rate,
-            bps=bps,
-            avatar_id=avatar,
-            output_path=Path(f"offline_data/_warmup/{avatar}"),
-            audio_fmt="s16le",
-            tail_video_path=None,
-        )
+        for avatar in settings.offline_avatars:
+            await local_video_run(
+                audio=warmup_audio,
+                sample_rate=sample_rate,
+                bps=bps,
+                avatar_id=avatar,
+                output_path=Path(f"offline_data/_warmup/{avatar}"),
+                audio_fmt="s16le",
+                tail_video_path=None,
+            )
 
 if __name__ == "__main__":  # pragma: no cover
     asyncio.run(warm_up())
