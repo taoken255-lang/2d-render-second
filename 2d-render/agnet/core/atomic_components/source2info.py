@@ -71,7 +71,7 @@ class Source2Info:
             det, _ = self.insightface_det(img)
             boxes = det[np.argsort(-(det[:, 2] - det[:, 0]) * (det[:, 3] - det[:, 1]))]
             if len(boxes) == 0:
-                return None
+                raise ValueError("Source2Info: InsightFaceDet found no face on source frame")
             lmk_for_track = self.landmark106(img, boxes[0])  # 106
         else:  # track for video frames
             lmk_for_track = last_lmk  # 203
@@ -137,8 +137,10 @@ class Source2Info:
             crop_flag_do_rot: True
         """
         img_crop, M_c2o, lmk203 = self._crop(img, last_lmk=last_lmk, **kwargs)  # ? Обрезаем + модель landmark203
-
-        eye_open, eye_ball = self._get_eye_info(img_crop)  # Информация о глазах
+        try:
+            eye_open, eye_ball = self._get_eye_info(img_crop)  # Информация о глазах
+        except Exception as e:
+            raise ValueError(f"Source2Info: eye landmark extraction failed: {e}") from e
 
         rgb_256_bchw = self._img_crop_to_bchw256(img_crop)  # Преобразование в 256х256 + интерполяция (формат (1, 3, 256, 256)
         kp_info = self._get_kp_info(rgb_256_bchw)  # <M> - motion extractor

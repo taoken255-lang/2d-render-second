@@ -118,25 +118,121 @@ class StreamSDK:
 
         self.seq_video_extractor = SequentialPyAVFrameExtractor()
         self.stop_event = threading.Event()
+        self.video_segment_buffer = []
+        self.video_segment_lock = threading.Lock()
+        self.video_segment_sequence = 0
+
+        # Keep a clear cutoff so late playAnimation commands can be discarded
+        # even if they were still queued outside the segment buffer.
+        self.video_segment_clear_cutoff = 0
+        self.video_exists = False
 
         self.interrupt_state = InterruptState()
 
-    def add_video_segment(self, video_segment_name: str):
+    def reserve_animation_sequence(self) -> int:
+        with self.video_segment_lock:
+            self.video_segment_sequence += 1
+            sequence_id = self.video_segment_sequence
+        logger.debug(f"reserve animation sequence_id={sequence_id}")
+        return sequence_id
+
+    def _normalize_video_segment_locked(self, video_segment_name, sequence_id: int | None):
+        if len(video_segment_name) == 3:
+            animation_name, auto_idle, embedded_sequence_id = video_segment_name
+            if sequence_id is None:
+                sequence_id = embedded_sequence_id
+        else:
+            animation_name, auto_idle = video_segment_name
+
+        if sequence_id is None:
+            self.video_segment_sequence += 1
+            sequence_id = self.video_segment_sequence
+
+        return animation_name, auto_idle, sequence_id
+
+    def _pop_stale_video_segments_locked(self) -> list[tuple[str, bool, int]]:
+        stale_video_segments = [
+            video_segment
+            for video_segment in self.video_segment_buffer
+            if video_segment[2] <= self.video_segment_clear_cutoff
+        ]
+        if stale_video_segments:
+            self.video_segment_buffer = [
+                video_segment
+                for video_segment in self.video_segment_buffer
+                if video_segment[2] > self.video_segment_clear_cutoff
+            ]
+        return stale_video_segments
+
+    def add_video_segment(
+        self,
+        video_segment_name: tuple[str, bool] | tuple[str, bool, int],
+        sequence_id: int | None = None,
+    ):
         """
         Add video segment to buffer.
         """
-        logger.debug(f"add video segment {video_segment_name[0]} into buffer({self.video_segment_buffer})")
+        with self.video_segment_lock:
+            animation_name, auto_idle, sequence_id = self._normalize_video_segment_locked(
+                video_segment_name=video_segment_name,
+                sequence_id=sequence_id,
+            )
+            if sequence_id <= self.video_segment_clear_cutoff:
+                cutoff = self.video_segment_clear_cutoff
+                logger.info(
+                    f"Skip stale animation {animation_name}#{sequence_id} "
+                    f"because clear cutoff is {cutoff}"
+                )
+                return
 
-        self.video_segment_buffer.append(video_segment_name)
+            video_segment = (animation_name, auto_idle, sequence_id)
+            self.video_segment_buffer.append(video_segment)
+            buffer_snapshot = list(self.video_segment_buffer)
+        logger.debug(f"add video segment {animation_name}#{sequence_id} into buffer({buffer_snapshot})")
 
     def clear_animations(self):
         """
         Clear all pending animations from the queue.
         After current animation finishes, will return to idle.
         """
-        logger.info(f"Clearing animation queue. Current queue: {self.video_segment_buffer}")
-        self.video_segment_buffer.clear()
+        with self.video_segment_lock:
+            queued_before_clear = list(self.video_segment_buffer)
+            self.video_segment_clear_cutoff = self.video_segment_sequence
+            stale_video_segments = self._pop_stale_video_segments_locked()
+            clear_cutoff = self.video_segment_clear_cutoff
+            buffer_snapshot = list(self.video_segment_buffer)
+        if stale_video_segments:
+            logger.info(
+                f"Removed stale animations after clear cutoff={clear_cutoff}: "
+                f"{stale_video_segments}"
+            )
+        logger.info(
+            f"Clearing animation queue. clear_cutoff={clear_cutoff} "
+            f"queued_before={queued_before_clear} queued_after={buffer_snapshot}"
+        )
         logger.info("Animation queue cleared")
+
+    def pop_video_segment(self) -> tuple[str, bool, int] | None:
+        """
+        Take the next pending animation atomically so clear/play requests do not race.
+        """
+        with self.video_segment_lock:
+            stale_video_segments = self._pop_stale_video_segments_locked()
+            if not self.video_segment_buffer:
+                next_video_segment = None
+                buffer_snapshot = []
+            else:
+                next_video_segment = self.video_segment_buffer.pop(0)
+                buffer_snapshot = list(self.video_segment_buffer)
+        if stale_video_segments:
+            logger.info(f"Discard stale animations before pop: {stale_video_segments}")
+        if next_video_segment is None:
+            return None
+        logger.debug(
+            f"pop video segment {next_video_segment[0]}#{next_video_segment[2]} "
+            f"from buffer({buffer_snapshot})"
+        )
+        return next_video_segment
 
     def add_emotion(self, emotion_name: str, gain: int = 10):
         """
@@ -476,7 +572,8 @@ class StreamSDK:
             with open(video_segments_path, 'r') as fp:
                 self.video_segment_info = json.load(fp)
 
-        self.video_segment_buffer = []
+        with self.video_segment_lock:
+            self.video_segment_buffer = []
         self.video_segment_current = self.idle_name
         self.video_segment_auto_idle = True
         self.video_segment_previous = ""
@@ -486,6 +583,18 @@ class StreamSDK:
         self.seq_video_extractor.seek_to_frame(self.gen_frame_idx)
 
         print(f'loaded video segments {self.video_segment_info}')
+
+    def activate_video_segment(self, video_segment_name: str, auto_idle: bool) -> bool:
+        self.video_segment_current = video_segment_name
+        self.video_segment_auto_idle = auto_idle
+        self.gen_frame_idx = self.video_segment_info[self.video_segment_current]["start"]
+        if "vad" in self.video_segment_info[self.video_segment_current]:
+            vad = self.video_segment_info[self.video_segment_current]["vad"]
+            logger.debug(f"ASSIGN VAD {vad} TO {self.video_segment_current}")
+        else:
+            vad = False
+        self.seq_video_extractor.seek_to_frame(self.gen_frame_idx)
+        return vad
 
     def stream_frames(self):
         while not self.stop_event.is_set():
@@ -788,7 +897,10 @@ class StreamSDK:
                 self.motion_stitch_queue.put(item)
                 continue
             elif isinstance(item, RenderAnimationObject):
-                self.add_video_segment(video_segment_name=item.render_data)
+                self.add_video_segment(
+                    video_segment_name=item.render_data,
+                    sequence_id=item.sequence_id,
+                )
                 continue
             else:
                 item, is_voice = item
@@ -838,17 +950,12 @@ class StreamSDK:
                             video_segment = self.video_segment_info[self.video_segment_current]
                             if self.gen_frame_idx >= video_segment["end"]:
                                 # if current video segment is ended, switch to idle
-                                if len(self.video_segment_buffer) > 0:
-                                    new_video_segment = self.video_segment_buffer.pop(0)
-                                    self.video_segment_current = new_video_segment[0]
-                                    self.video_segment_auto_idle = new_video_segment[1]
-                                    self.gen_frame_idx = self.video_segment_info[self.video_segment_current]["start"]
-                                    if "vad" in self.video_segment_info[self.video_segment_current]:
-                                        vad = self.video_segment_info[self.video_segment_current]["vad"]
-                                        logger.debug(f"ASSIGN VAD {vad} TO {self.video_segment_current}")
-                                    else:
-                                        vad = False
-                                    self.seq_video_extractor.seek_to_frame(self.gen_frame_idx)
+                                new_video_segment = self.pop_video_segment()
+                                if new_video_segment is not None:
+                                    vad = self.activate_video_segment(
+                                        video_segment_name=new_video_segment[0],
+                                        auto_idle=new_video_segment[1],
+                                    )
                                 else:
                                     if self.video_segment_auto_idle:
                                         self.video_segment_current = self.idle_name  # тест анимация за анимацией
