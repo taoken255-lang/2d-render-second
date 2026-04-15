@@ -120,75 +120,18 @@ class StreamSDK:
         self.stop_event = threading.Event()
         self.video_segment_buffer = []
         self.video_segment_lock = threading.Lock()
-        self.video_segment_sequence = 0
-
-        # Keep a clear cutoff so late playAnimation commands can be discarded
-        # even if they were still queued outside the segment buffer.
-        self.video_segment_clear_cutoff = 0
         self.video_exists = False
 
         self.interrupt_state = InterruptState()
 
-    def reserve_animation_sequence(self) -> int:
-        with self.video_segment_lock:
-            self.video_segment_sequence += 1
-            sequence_id = self.video_segment_sequence
-        logger.debug(f"reserve animation sequence_id={sequence_id}")
-        return sequence_id
-
-    def _normalize_video_segment_locked(self, video_segment_name, sequence_id: int | None):
-        if len(video_segment_name) == 3:
-            animation_name, auto_idle, embedded_sequence_id = video_segment_name
-            if sequence_id is None:
-                sequence_id = embedded_sequence_id
-        else:
-            animation_name, auto_idle = video_segment_name
-
-        if sequence_id is None:
-            self.video_segment_sequence += 1
-            sequence_id = self.video_segment_sequence
-
-        return animation_name, auto_idle, sequence_id
-
-    def _pop_stale_video_segments_locked(self) -> list[tuple[str, bool, int]]:
-        stale_video_segments = [
-            video_segment
-            for video_segment in self.video_segment_buffer
-            if video_segment[2] <= self.video_segment_clear_cutoff
-        ]
-        if stale_video_segments:
-            self.video_segment_buffer = [
-                video_segment
-                for video_segment in self.video_segment_buffer
-                if video_segment[2] > self.video_segment_clear_cutoff
-            ]
-        return stale_video_segments
-
-    def add_video_segment(
-        self,
-        video_segment_name: tuple[str, bool] | tuple[str, bool, int],
-        sequence_id: int | None = None,
-    ):
+    def add_video_segment(self, video_segment_name: tuple[str, bool]):
         """
         Add video segment to buffer.
         """
         with self.video_segment_lock:
-            animation_name, auto_idle, sequence_id = self._normalize_video_segment_locked(
-                video_segment_name=video_segment_name,
-                sequence_id=sequence_id,
-            )
-            if sequence_id <= self.video_segment_clear_cutoff:
-                cutoff = self.video_segment_clear_cutoff
-                logger.info(
-                    f"Skip stale animation {animation_name}#{sequence_id} "
-                    f"because clear cutoff is {cutoff}"
-                )
-                return
-
-            video_segment = (animation_name, auto_idle, sequence_id)
-            self.video_segment_buffer.append(video_segment)
+            self.video_segment_buffer.append(video_segment_name)
             buffer_snapshot = list(self.video_segment_buffer)
-        logger.debug(f"add video segment {animation_name}#{sequence_id} into buffer({buffer_snapshot})")
+        logger.debug(f"add video segment {video_segment_name[0]} into buffer({buffer_snapshot})")
 
     def clear_animations(self):
         """
@@ -196,42 +139,21 @@ class StreamSDK:
         After current animation finishes, will return to idle.
         """
         with self.video_segment_lock:
-            queued_before_clear = list(self.video_segment_buffer)
-            self.video_segment_clear_cutoff = self.video_segment_sequence
-            stale_video_segments = self._pop_stale_video_segments_locked()
-            clear_cutoff = self.video_segment_clear_cutoff
             buffer_snapshot = list(self.video_segment_buffer)
-        if stale_video_segments:
-            logger.info(
-                f"Removed stale animations after clear cutoff={clear_cutoff}: "
-                f"{stale_video_segments}"
-            )
-        logger.info(
-            f"Clearing animation queue. clear_cutoff={clear_cutoff} "
-            f"queued_before={queued_before_clear} queued_after={buffer_snapshot}"
-        )
+            self.video_segment_buffer.clear()
+        logger.info(f"Clearing animation queue. Current queue: {buffer_snapshot}")
         logger.info("Animation queue cleared")
 
-    def pop_video_segment(self) -> tuple[str, bool, int] | None:
+    def pop_video_segment(self) -> tuple[str, bool] | None:
         """
         Take the next pending animation atomically so clear/play requests do not race.
         """
         with self.video_segment_lock:
-            stale_video_segments = self._pop_stale_video_segments_locked()
             if not self.video_segment_buffer:
-                next_video_segment = None
-                buffer_snapshot = []
-            else:
-                next_video_segment = self.video_segment_buffer.pop(0)
-                buffer_snapshot = list(self.video_segment_buffer)
-        if stale_video_segments:
-            logger.info(f"Discard stale animations before pop: {stale_video_segments}")
-        if next_video_segment is None:
-            return None
-        logger.debug(
-            f"pop video segment {next_video_segment[0]}#{next_video_segment[2]} "
-            f"from buffer({buffer_snapshot})"
-        )
+                return None
+            next_video_segment = self.video_segment_buffer.pop(0)
+            buffer_snapshot = list(self.video_segment_buffer)
+        logger.debug(f"pop video segment {next_video_segment[0]} from buffer({buffer_snapshot})")
         return next_video_segment
 
     def add_emotion(self, emotion_name: str, gain: int = 10):
@@ -876,6 +798,7 @@ class StreamSDK:
         valid_clip_len = self.audio2motion.valid_clip_len  # 10
         aud_feat_dim = self.wav2feat.feat_dim  # 1024 поум
         item_buffer = np.zeros((0, aud_feat_dim), dtype=np.float32)
+        pending_valid_frames = 0
 
         res_kp_seq = None
         res_kp_seq_valid_start = None if self.online_mode else 0  # None
@@ -897,14 +820,20 @@ class StreamSDK:
                 self.motion_stitch_queue.put(item)
                 continue
             elif isinstance(item, RenderAnimationObject):
-                self.add_video_segment(
-                    video_segment_name=item.render_data,
-                    sequence_id=item.sequence_id,
-                )
+                self.add_video_segment(video_segment_name=item.render_data)
                 continue
             else:
-                item, is_voice = item
+                if not isinstance(item, tuple):
+                    is_voice = True
+                    valid_frames = len(item)
+                elif len(item) == 2:
+                    item, is_voice = item
+                    valid_frames = len(item)
+                else:
+                    item, is_voice, valid_frames = item
+                    valid_frames = max(0, min(int(valid_frames), len(item)))
                 item_buffer = np.concatenate([item_buffer, item], 0)
+                pending_valid_frames += valid_frames
 
             if not is_end and item_buffer.shape[0] < valid_clip_len:  # 10
                 # wait at least valid_clip_len new item - Буфер в 10
@@ -944,7 +873,9 @@ class StreamSDK:
                 else:
                     valid_res_kp_seq = res_kp_seq[:, res_kp_seq_valid_start: res_kp_seq_valid_start + real_valid_len]  # ? Кадры-кейпоинты не из области слияния
                     x_d_info_list = self.audio2motion.cvt_fmt(valid_res_kp_seq)  # Список кадров-кейпоинтов формата [{np[]}, ...]
-                    for x_d_info in x_d_info_list:
+                    emit_frames = min(pending_valid_frames, len(x_d_info_list))
+                    pending_valid_frames -= emit_frames
+                    for x_d_info in x_d_info_list[:emit_frames]:
                         if self.video_exists:
                         # ------------------- Manage Video Segments -------------------
                             video_segment = self.video_segment_info[self.video_segment_current]
@@ -1063,7 +994,7 @@ class StreamSDK:
         if self.worker_exception is not None:
             raise self.worker_exception
 
-    def run_chunk(self, audio_chunk, chunksize=(3, 5, 2), is_voice: bool = True):
+    def run_chunk(self, audio_chunk, chunksize=(3, 5, 2), is_voice: bool = True, valid_frames=None):
         # only for hubert
         # is_voice = False
         # audio_chunk = np.zeros_like(audio_chunk)
@@ -1076,12 +1007,17 @@ class StreamSDK:
         else:
             with self.timing.measure("inference_wav2feat"):
                 aud_feat = self.wav2feat(audio_chunk, chunksize=chunksize)  # aud_feat - audio features через HuBERT
+            if valid_frames is None:
+                payload = (aud_feat, is_voice)
+            else:
+                valid_frames = max(0, min(int(valid_frames), len(aud_feat)))
+                payload = (aud_feat, is_voice, valid_frames)
             while not self.stop_event.is_set():
                 try:
                     if self.first_chunk:
                         self.union_start = time.perf_counter()
                         self.first_chunk = False
-                    self.audio2motion_queue.put((aud_feat, is_voice), timeout=1)
+                    self.audio2motion_queue.put(payload, timeout=1)
                     self.timing.point_once("first_wav2feat_out")
                     break
                 except queue.Full:

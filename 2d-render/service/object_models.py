@@ -73,9 +73,8 @@ class EventObject:
 
 
 class RenderAnimationObject:
-	def __init__(self, render_data, sequence_id: int | None = None):
+	def __init__(self, render_data):
 		self.render_data = render_data
-		self.sequence_id = sequence_id
 
 
 class RenderEmotionObject:

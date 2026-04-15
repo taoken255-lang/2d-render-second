@@ -58,20 +58,13 @@ class RenderService:
 		pass
 
 	def play_animation(self, animation: str, auto_idle: bool, is_quick: bool = False):
-		sequence_id = self.sdk.reserve_animation_sequence()
 		# The default path stays synchronized with audio2motion timing.
 		# The fast path is opt-in via the gRPC is_quick flag.
 		if is_quick:
-			self.sdk.add_video_segment((animation, auto_idle), sequence_id=sequence_id)
+			self.sdk.add_video_segment((animation, auto_idle))
 		else:
-			self.render_object(render_object=RenderAnimationObject(
-				render_data=(animation, auto_idle),
-				sequence_id=sequence_id,
-			))
-		logger.info(
-			f"animation got: {animation} auto idle: {auto_idle} "
-			f"is_quick: {is_quick} animation_id: {sequence_id}"
-		)
+			self.render_object(render_object=RenderAnimationObject(render_data=(animation, auto_idle)))
+		logger.info(f"animation got: {animation} auto idle: {auto_idle} is_quick: {is_quick}")
 
 	def set_emotion(self, emotion: str):
 		self.render_object(render_object=RenderEmotionObject(render_data=emotion))
@@ -215,12 +208,18 @@ class RenderService:
 		chunksize = (3, 5, 2)
 		# audio = np.concatenate([np.zeros((chunksize[0] * 640,), dtype=np.float32), audio], 0)  # 1920 нулей, потом аудио?
 		split_len = int(sum(chunksize) * 0.04 * 16000)  # 6400 - длина split_len
+		frame_samples = 640
+		step_len = chunksize[1] * 640
 		buf_length = len(self.audio_buffer)
 		idx = 0
-		for i in range(0, buf_length, chunksize[1] * 640):  # от начала до конца с шагом 5 * 640 = 3200
+		for i in range(0, buf_length, step_len):  # от начала до конца с шагом 5 * 640 = 3200
 			audio_chunk = self.audio_buffer[i:i + split_len]  # передавать кусок предыдущего чанка в следующий?
 			if len(audio_chunk) < split_len:
 				if is_last:
+					emit_samples = min(len(audio_chunk), step_len)
+					valid_frames = min(chunksize[1], (emit_samples + frame_samples - 1) // frame_samples)
+					if valid_frames <= 0:
+						break
 					# TRACE: per-chunk state, not milestone
 					logger.trace("IS LAST")
 					audio_chunk = np.pad(audio_chunk, (0, split_len - len(audio_chunk)), mode="constant")
@@ -230,7 +229,8 @@ class RenderService:
 					if not self.first_run_chunk_logged:
 						logger.info(f"[TIMING] [AUDIO] first_run_chunk chunks_rx={self.chunks_rx} buf_samples={len(self.audio_buffer)}")
 						self.first_run_chunk_logged = True
-					self.sdk.run_chunk(audio_chunk, chunksize, is_voice)
+					idx = min(i + step_len, buf_length)
+					self.sdk.run_chunk(audio_chunk, chunksize, is_voice, valid_frames=valid_frames)
 			else:
 				if self.timer_first_flag:
 					self.start_time = time.perf_counter()
@@ -238,7 +238,7 @@ class RenderService:
 				if not self.first_run_chunk_logged:
 					logger.info(f"[TIMING] [AUDIO] first_run_chunk chunks_rx={self.chunks_rx} buf_samples={len(self.audio_buffer)}")
 					self.first_run_chunk_logged = True
-				idx = i + chunksize[1] * 640
+				idx = i + step_len
 				# logger.info(f"GOT AUDIO FROM BUFFER: {len(audio_chunk)}")
 				self.sdk.run_chunk(audio_chunk, chunksize, is_voice)
 		self.audio_buffer = self.audio_buffer[idx::]
