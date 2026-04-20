@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 import threading
 import time
 from collections import deque
+from queue import Full
 from typing import Deque, Optional, Set, Tuple, Union, List
 
 import av  # type: ignore
@@ -15,9 +15,9 @@ from aiortc import MediaStreamTrack  # type: ignore
 from av.frame import Frame  # type: ignore
 from av.packet import Packet  # type: ignore
 
-from rtc_mediaserver.logging_config import get_logger, setup_default_logging
-from .constants import AUDIO_SETTINGS, VIDEO_CLOCK, VIDEO_PTIME, VIDEO_TB, USER_EVENTS, INTERRUPT_CALLED, STATE
-from .shared import SYNC_QUEUE, SYNC_QUEUE_SEM
+from rtc_mediaserver.common.logging_config import get_logger, setup_default_logging
+from rtc_mediaserver.common.constants import AUDIO_SETTINGS, VIDEO_CLOCK, VIDEO_PTIME, VIDEO_TB, USER_EVENTS, STATE
+from rtc_mediaserver.common.shared import SYNC_QUEUE
 
 # Make sure logging is configured as early as possible
 setup_default_logging()
@@ -27,6 +27,8 @@ __all__ = [
     "PlayerStreamTrack",
     "WebRTCMediaPlayer",
 ]
+
+_STOP_WORKER = object()
 
 class RecvSync:
     _recv_count = 3
@@ -44,6 +46,16 @@ class RecvSync:
     def wait(cls):
         with cls._condition:
             cls._condition.wait()
+
+    @classmethod
+    def free(cls):
+        with cls._condition:
+            cls._condition.notify_all()
+
+    @classmethod
+    def clear(cls):
+        cls._recv_count = 3
+        cls._condition = threading.Condition()
 
 class PlayerStreamTrack(MediaStreamTrack):
     """Custom aiortc track that pulls frames from an internal queue."""
@@ -170,6 +182,12 @@ class WebRTCMediaPlayer:
         self._active.discard(track)
         if not self._active and self._thread:
             self._quit.set()
+            RecvSync.free()
+            try:
+                SYNC_QUEUE.put_nowait(_STOP_WORKER)
+            except Full:
+                # Queue already has data, worker will observe _quit on next iteration.
+                pass
             self._thread.join()
             self._thread = None
             logger.info(f"media thread stopped aqs={self._audio_track._queue.qsize()}, vqs={self._video_track._queue.qsize()}")
@@ -210,9 +228,10 @@ class WebRTCMediaPlayer:
 
                 if audio_queue.qsize() > 0 or video_queue.qsize() > 0:
                     RecvSync.wait()
+                    if self._quit.is_set():
+                        break
 
                 self._load_next_batch()
-                self.next_deadline = time.perf_counter()
 
                 while self._audio_chunks or self._video_frames:
                     self._push_audio()
@@ -221,19 +240,24 @@ class WebRTCMediaPlayer:
                     break
 
             else:
-
                 self.base = None
                 self._video_frames.clear()
                 self._audio_chunks.clear()
+                RecvSync.clear()
 
     # ───────────────────── Internal helpers ────────────────────────────
-    def _load_next_batch(self) -> None:
+    def _load_next_batch(self) -> bool:
         """Pop next synced batch (1 sec audio + 25 frames) from queue."""
 
         if self._audio_chunks and self._video_frames:
             return
 
-        audio_sec, frames25, evt_to_send = SYNC_QUEUE.get()
+        data = SYNC_QUEUE.get()
+
+        if data is _STOP_WORKER:
+            return
+
+        audio_sec, frames25, evt_to_send = data
 
         for i in range(0, len(audio_sec), AUDIO_SETTINGS.audio_samples):
             self._audio_chunks.append([audio_sec[i:i + AUDIO_SETTINGS.audio_samples], evt_to_send if evt_to_send == "interrupted" else None])
@@ -242,6 +266,8 @@ class WebRTCMediaPlayer:
         for i in frames25:
             frame, idx = i
             self._video_frames.append((frame, idx, evt_to_send if evt_to_send == "interrupted" else None))
+
+        return True
 
     def _push_audio(self) -> None:
         if not self._audio_chunks:
@@ -252,8 +278,6 @@ class WebRTCMediaPlayer:
         if event == "interrupted":
             return True
         frame = av.AudioFrame(format="s16", layout="mono", samples=AUDIO_SETTINGS.audio_samples)
-        if np.any(chunk):
-            STATE.send_to_client()
         frame.planes[0].update(chunk.tobytes())
         frame.sample_rate = AUDIO_SETTINGS.sample_rate
 

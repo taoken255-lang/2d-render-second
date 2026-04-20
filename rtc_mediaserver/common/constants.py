@@ -3,11 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import fractions
-import logging
 import os
-import threading
-import time
-from asyncio import AbstractEventLoop
 from pathlib import Path
 
 __all__ = [
@@ -23,12 +19,10 @@ __all__ = [
     "FRAMES_PER_CHUNK",
 ]
 
-from typing import Callable, Coroutine
-
 from aiortc import RTCPeerConnection
 
-from rtc_mediaserver.logging_config import get_logger
-from rtc_mediaserver.webrtc_server.shared import SYNC_QUEUE, AUDIO_SECOND_QUEUE
+from rtc_mediaserver.common.logging_config import get_logger
+from rtc_mediaserver.common.shared import SYNC_QUEUE, AUDIO_SECOND_QUEUE
 
 
 class AudioParams:
@@ -91,7 +85,6 @@ RTC_STREAM_CONNECTED = asyncio.BoundedSemaphore(1)
 CLIENT_COMMANDS = asyncio.Queue()
 USER_EVENTS = asyncio.Queue()
 
-INTERRUPT_CALLED = asyncio.Event()
 ANIMATION_CALLED = asyncio.Event()
 EMOTION_CALLED = asyncio.Event()
 SYNTHESIZE_IN_PROGRESS = asyncio.Event()
@@ -122,23 +115,6 @@ class State:
         self.synthesize_task: asyncio.Task = None
 
     def kill_streamer(self):
-        if self.streamer_task:
-            if not self.streamer_task.cancelled() and not self.streamer_task.done():
-                try:
-                    logging.info("streamer_task cancelling")
-                    self.streamer_loop.call_soon_threadsafe(self.streamer_task.cancel)
-                    logging.info("streamer_task cancelled")
-                    self.streamer_task = None
-                    self.streamer_loop = None
-                except:
-                    logging.error("Error cancel streamer_task")
-
-        # while True:
-        #     try:
-        #         SYNC_QUEUE_SEM.release()
-        #     except ValueError as e:
-        #         break
-
         while not SYNC_QUEUE.empty():
             try:
                 SYNC_QUEUE.get_nowait()
@@ -183,24 +159,5 @@ class State:
                 SENTENCES_QUEUE.task_done()
             except Exception:  # noqa: BLE001
                 break
-
-    def audio_received(self):
-        if not self.perf_t:
-            self.perf_t = time.time()
-
-    def audio_rendered(self):
-        if self.perf_t and self.first_call_r:
-            logger.debug(f"PERF_T {time.time() - self.perf_t}")
-            self.first_call_r = False
-
-    def send_to_client(self):
-        if self.perf_t and self.first_call_s:
-            logger.debug(f"PERF_T {time.time() - self.perf_t}")
-            self.first_call_s = False
-
-    def zero_perf_timer(self):
-        self.perf_t = None
-        self.first_call_r = True
-        self.first_call_s = True
 
 STATE = State()

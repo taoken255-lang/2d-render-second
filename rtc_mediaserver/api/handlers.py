@@ -7,16 +7,15 @@ from typing import Any, Dict, Union
 
 import numpy as np  # type: ignore
 
-from .client_state import ClientState
-from .constants import AUDIO_SETTINGS, INTERRUPT_CALLED, AVATAR_SET, \
-    INIT_DONE, COMMANDS_QUEUE, STATE, SYNTHESIZE_IN_PROGRESS, SYNTHESIZE_LOCK, SENTENCES_QUEUE
-from .info import info
-from .shared import AUDIO_SECOND_QUEUE, SYNC_QUEUE
-from .tools import fit_chunk
-from .tts.elevenlabs import synthesize
-from .util import _flush_pcm_buf
-from ..config import settings
-from ..events import ServiceEvents
+from rtc_mediaserver.common.client_state import ClientState
+from rtc_mediaserver.common.constants import AUDIO_SETTINGS, AVATAR_SET, \
+    INIT_DONE, COMMANDS_QUEUE, STATE,  SENTENCES_QUEUE
+from rtc_mediaserver.render.common.info import info
+from rtc_mediaserver.common.shared import AUDIO_SECOND_QUEUE
+from rtc_mediaserver.common.tools import fit_chunk
+from rtc_mediaserver.common.util import _flush_pcm_buf
+from rtc_mediaserver.common.config import settings
+from rtc_mediaserver.common.events import ServiceEvents
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +76,6 @@ async def handle_audio(message: Dict[str, Any], state: ClientState) -> dict:
             "code": "AUDIO_DECODING_ERROR",
             "message": "Audio decoding error. Should be valid base-64 string."
         }
-
-    STATE.audio_received()
 
     state.pcm_buf.extend(chunk_bytes)
 
@@ -184,7 +181,7 @@ async def handle_play_animation(message: Dict[str, Any], state: ClientState) -> 
                 "message": "Invalid animation."
             }
 
-    logger.info(f"Playing animation → {animation}, with auto_idle={STATE.auto_idle}", )
+    logger.info(f"Playing animation → {animation}, with auto_idle={STATE.auto_idle}")
     COMMANDS_QUEUE.put_nowait((ServiceEvents.SET_ANIMATION, (animation, is_quick)))
 
 async def handle_set_emotion(message: Dict[str, Any], state: ClientState) -> dict:
@@ -251,7 +248,6 @@ async def handle_interrupt(message: Dict[str, Any], state: ClientState) -> dict:
             "code": "AVATAR_IS_NOT_SET",
             "message": "Avatar is not set."
         }
-    INTERRUPT_CALLED.set()
     state.pcm_buf.clear()
     # Drain global queue completely (non-blocking)
     while not AUDIO_SECOND_QUEUE.empty():

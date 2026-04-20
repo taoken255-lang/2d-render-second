@@ -1,6 +1,6 @@
 import enum
 
-from rtc_mediaserver.webrtc_server.constants import CAN_SEND_FRAMES, AVATAR_SET
+from rtc_mediaserver.common.constants import CAN_SEND_FRAMES, AVATAR_SET
 
 
 class ServiceEvents(enum.Enum):

@@ -3,7 +3,7 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Dict, Any
-from rtc_mediaserver.config import settings
+from rtc_mediaserver.common.config import settings
 
 
 class TaskManager:

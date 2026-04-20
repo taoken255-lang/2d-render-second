@@ -3,22 +3,19 @@ import base64
 import json
 import time
 import traceback
-import logging
-from asyncio import AbstractEventLoop
 from typing import Optional
 
 import aiohttp
 import numpy as np
 import websockets
 
-from rtc_mediaserver.config import settings
-from rtc_mediaserver.logging_config import get_logger, setup_default_logging
-from rtc_mediaserver.webrtc_server.client_state import ClientState
-from rtc_mediaserver.webrtc_server.constants import AUDIO_SETTINGS, SENTENCES_QUEUE, SYNTHESIZE_IN_PROGRESS, STATE, \
-    RTC_STREAM_CONNECTED
-from rtc_mediaserver.webrtc_server.shared import AUDIO_SECOND_QUEUE
-from rtc_mediaserver.webrtc_server.tools import fit_chunk
-from rtc_mediaserver.webrtc_server.util import _flush_pcm_buf
+from rtc_mediaserver.common.config import settings
+from rtc_mediaserver.common.logging_config import get_logger
+from rtc_mediaserver.common.client_state import ClientState
+from rtc_mediaserver.common.constants import AUDIO_SETTINGS, SENTENCES_QUEUE, SYNTHESIZE_IN_PROGRESS, STATE
+from rtc_mediaserver.common.shared import AUDIO_SECOND_QUEUE
+from rtc_mediaserver.common.tools import fit_chunk
+from rtc_mediaserver.common.util import _flush_pcm_buf
 
 logger = get_logger(__name__)
 

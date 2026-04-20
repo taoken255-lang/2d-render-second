@@ -7,7 +7,7 @@ from typing import Tuple, List
 
 import numpy as np
 
-from rtc_mediaserver.config import settings
+from rtc_mediaserver.common.config import settings
 
 # Queues used for synchronising audio and video blocks between gRPC client
 # (that produces rendered frames) and the media player that feeds them to AIORTC.

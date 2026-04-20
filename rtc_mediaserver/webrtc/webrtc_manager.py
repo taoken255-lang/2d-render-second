@@ -5,7 +5,6 @@ import asyncio
 import threading
 import time
 import logging
-from asyncio import AbstractEventLoop
 from concurrent.futures import Future
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
@@ -13,12 +12,12 @@ from dataclasses import dataclass
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
 from aiortc.rtcrtpsender import RTCRtpSender
 
-from .player import WebRTCMediaPlayer
-from .constants import RTC_STREAM_CONNECTED, CAN_SEND_FRAMES, AVATAR_SET, STATE, State, WS_CONTROL_CONNECTED, \
+from rtc_mediaserver.webrtc.player import WebRTCMediaPlayer
+from rtc_mediaserver.common.constants import RTC_STREAM_CONNECTED, CAN_SEND_FRAMES, AVATAR_SET, STATE,  WS_CONTROL_CONNECTED, \
     SENTENCES_QUEUE
-from .shared import AUDIO_SECOND_QUEUE
-from .tts.elevenlabs import start_synthesize_worker, stop_synthesize_worker
-from ..config import settings
+from rtc_mediaserver.common.shared import AUDIO_SECOND_QUEUE
+from rtc_mediaserver.services.tts.elevenlabs import start_synthesize_worker, stop_synthesize_worker
+from rtc_mediaserver.common.config import settings
 
 logger = logging.getLogger(__name__)
 

@@ -1,10 +1,9 @@
 import asyncio
 import os
-import signal
 import time
 
-from rtc_mediaserver.logging_config import get_logger
-from rtc_mediaserver.webrtc_server.info import info
+from rtc_mediaserver.common.logging_config import get_logger
+from rtc_mediaserver.render.common.info import info
 
 logger = get_logger(__name__)
 

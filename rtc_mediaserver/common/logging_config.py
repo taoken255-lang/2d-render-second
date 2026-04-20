@@ -4,7 +4,7 @@ import logging
 import sys
 from typing import Optional
 
-from .config import settings
+from rtc_mediaserver.common.config import settings
 
 
 def setup_logging(

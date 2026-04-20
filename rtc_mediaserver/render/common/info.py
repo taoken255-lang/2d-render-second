@@ -1,10 +1,9 @@
 import asyncio
-import logging
 
 import grpc
 
 import rtc_mediaserver
-from rtc_mediaserver.config import settings
+from rtc_mediaserver.common.config import settings
 from rtc_mediaserver.proto.render_service_pb2_grpc import RenderServiceStub
 
 def _info() -> dict:

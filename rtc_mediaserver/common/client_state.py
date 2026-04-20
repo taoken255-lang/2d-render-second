@@ -1,4 +1,4 @@
-from rtc_mediaserver.webrtc_server.constants import AUDIO_SETTINGS
+from rtc_mediaserver.common.constants import AUDIO_SETTINGS
 
 
 class ClientState:
