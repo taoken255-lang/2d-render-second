@@ -335,6 +335,11 @@ class BlazeFace:
 
 if __name__ == "__main__":
     import argparse
+    from loguru import logger
+
+    from logging_config import configure_logging
+
+    configure_logging()
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="")
@@ -348,4 +353,4 @@ if __name__ == "__main__":
     image = image[np.newaxis, :, :, :].astype(np.float32)
     image = image / 127.5 - 1.0
     boxes = blaze_face(image)
-    print(boxes)
+    logger.info(boxes)

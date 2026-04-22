@@ -2,6 +2,7 @@ import os
 import numpy as np
 np._core = np.core
 import pickle
+from loguru import logger
 
 
 def load_pkl(pkl):
@@ -102,11 +103,11 @@ def parse_cfg(cfg_pkl, data_root, replace_cfg=None):
 def print_cfg(**kwargs):
     for k, v in kwargs.items():
         if k == "ch_info":
-            print(k, type(v))
+            logger.info(f"{k} {type(v)}")
         elif k == "ctrl_info":
-            print(k, type(v), len(v))
+            logger.info(f"{k} {type(v)} {len(v)}")
         else:
             if isinstance(v, np.ndarray):
-                print(k, type(v), v.shape)
+                logger.info(f"{k} {type(v)} {v.shape}")
             else:
-                print(k, type(v), v)
+                logger.info(f"{k} {type(v)} {v}")

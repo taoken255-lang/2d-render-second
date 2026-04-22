@@ -58,13 +58,20 @@ class RenderService:
 		pass
 
 	def play_animation(self, animation: str, auto_idle: bool, is_quick: bool = False):
+		sequence_id = self.sdk.reserve_animation_sequence()
 		# The default path stays synchronized with audio2motion timing.
 		# The fast path is opt-in via the gRPC is_quick flag.
 		if is_quick:
-			self.sdk.add_video_segment((animation, auto_idle))
+			self.sdk.add_video_segment((animation, auto_idle), sequence_id=sequence_id)
 		else:
-			self.render_object(render_object=RenderAnimationObject(render_data=(animation, auto_idle)))
-		logger.info(f"animation got: {animation} auto idle: {auto_idle} is_quick: {is_quick}")
+			self.render_object(render_object=RenderAnimationObject(
+				render_data=(animation, auto_idle),
+				sequence_id=sequence_id,
+			))
+		logger.info(
+			f"animation got: {animation} auto idle: {auto_idle} "
+			f"is_quick: {is_quick} animation_id: {sequence_id}"
+		)
 
 	def set_emotion(self, emotion: str):
 		self.render_object(render_object=RenderEmotionObject(render_data=emotion))

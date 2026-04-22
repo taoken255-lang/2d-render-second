@@ -3,6 +3,7 @@ from grpc import ssl_channel_credentials
 from proto.render_service_pb2_grpc import RenderServiceStub
 from proto.render_service_pb2 import RenderRequest, ImageChunk, AudioChunk, PlayAnimation, SetAvatar, SetEmotion, InfoRequest
 from loguru import logger
+from logging_config import configure_logging
 import base64
 from moviepy import VideoFileClip, AudioFileClip
 import wave
@@ -12,6 +13,9 @@ import subprocess
 import numpy as np
 import cv2
 import os
+
+
+configure_logging()
 
 
 def video_request(audio_file, avatar_id):
@@ -250,13 +254,11 @@ def ffmpeg_saving(
             # Server sends RGB when output_format="mp4"
             create_video(video_frames, frame_width, frame_height, audio_path)
         else:
-            print(f"✗ RenderStream failed: No video chunks received")
+            logger.error("RenderStream failed: No video chunks received")
             return False
 
     except Exception as e:
-        print(f"✗ RenderStream failed: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"RenderStream failed: {e}")
         return False
 
 
@@ -326,10 +328,10 @@ if __name__ == '__main__':
     """
 
     url = "2d-dev.digitalavatars.ru"
-    aud_file = "tools/client/res/ved_00.wav"
-    aud_path = "tools/client/res/ved_00.wav"
+    aud_file = "tools/client/audios/vedenina_r.wav"
+    aud_path = "tools/client/audios/vedenina_r.wav"
     img_file = "tools/client/res/gomer.png"
-    avatar_id = "ermakova_doc"
+    avatar_id = "usgirl"
     output_dir = "C:/Users/Georgiy/Desktop/Programs/Sber/2DAvatars/2DRender/tools/client/"
     port = "8503"
     # info(url)

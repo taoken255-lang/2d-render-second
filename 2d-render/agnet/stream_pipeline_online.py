@@ -4,7 +4,6 @@ import os
 import threading
 import queue
 import time
-import traceback
 import json
 import torch
 
@@ -120,18 +119,75 @@ class StreamSDK:
         self.stop_event = threading.Event()
         self.video_segment_buffer = []
         self.video_segment_lock = threading.Lock()
+        self.video_segment_sequence = 0
+
+        # Keep a clear cutoff so late playAnimation commands can be discarded
+        # even if they were still queued outside the segment buffer.
+        self.video_segment_clear_cutoff = 0
         self.video_exists = False
 
         self.interrupt_state = InterruptState()
 
-    def add_video_segment(self, video_segment_name: tuple[str, bool]):
+    def reserve_animation_sequence(self) -> int:
+        with self.video_segment_lock:
+            self.video_segment_sequence += 1
+            sequence_id = self.video_segment_sequence
+        logger.debug(f"reserve animation sequence_id={sequence_id}")
+        return sequence_id
+
+    def _normalize_video_segment_locked(self, video_segment_name, sequence_id: int | None):
+        if len(video_segment_name) == 3:
+            animation_name, auto_idle, embedded_sequence_id = video_segment_name
+            if sequence_id is None:
+                sequence_id = embedded_sequence_id
+        else:
+            animation_name, auto_idle = video_segment_name
+
+        if sequence_id is None:
+            self.video_segment_sequence += 1
+            sequence_id = self.video_segment_sequence
+
+        return animation_name, auto_idle, sequence_id
+
+    def _pop_stale_video_segments_locked(self) -> list[tuple[str, bool, int]]:
+        stale_video_segments = [
+            video_segment
+            for video_segment in self.video_segment_buffer
+            if video_segment[2] <= self.video_segment_clear_cutoff
+        ]
+        if stale_video_segments:
+            self.video_segment_buffer = [
+                video_segment
+                for video_segment in self.video_segment_buffer
+                if video_segment[2] > self.video_segment_clear_cutoff
+            ]
+        return stale_video_segments
+
+    def add_video_segment(
+        self,
+        video_segment_name: tuple[str, bool] | tuple[str, bool, int],
+        sequence_id: int | None = None,
+    ):
         """
         Add video segment to buffer.
         """
         with self.video_segment_lock:
-            self.video_segment_buffer.append(video_segment_name)
+            animation_name, auto_idle, sequence_id = self._normalize_video_segment_locked(
+                video_segment_name=video_segment_name,
+                sequence_id=sequence_id,
+            )
+            if sequence_id <= self.video_segment_clear_cutoff:
+                cutoff = self.video_segment_clear_cutoff
+                logger.info(
+                    f"Skip stale animation {animation_name}#{sequence_id} "
+                    f"because clear cutoff is {cutoff}"
+                )
+                return
+
+            video_segment = (animation_name, auto_idle, sequence_id)
+            self.video_segment_buffer.append(video_segment)
             buffer_snapshot = list(self.video_segment_buffer)
-        logger.debug(f"add video segment {video_segment_name[0]} into buffer({buffer_snapshot})")
+        logger.debug(f"add video segment {animation_name}#{sequence_id} into buffer({buffer_snapshot})")
 
     def clear_animations(self):
         """
@@ -139,21 +195,42 @@ class StreamSDK:
         After current animation finishes, will return to idle.
         """
         with self.video_segment_lock:
+            queued_before_clear = list(self.video_segment_buffer)
+            self.video_segment_clear_cutoff = self.video_segment_sequence
+            stale_video_segments = self._pop_stale_video_segments_locked()
+            clear_cutoff = self.video_segment_clear_cutoff
             buffer_snapshot = list(self.video_segment_buffer)
-            self.video_segment_buffer.clear()
-        logger.info(f"Clearing animation queue. Current queue: {buffer_snapshot}")
+        if stale_video_segments:
+            logger.info(
+                f"Removed stale animations after clear cutoff={clear_cutoff}: "
+                f"{stale_video_segments}"
+            )
+        logger.info(
+            f"Clearing animation queue. clear_cutoff={clear_cutoff} "
+            f"queued_before={queued_before_clear} queued_after={buffer_snapshot}"
+        )
         logger.info("Animation queue cleared")
 
-    def pop_video_segment(self) -> tuple[str, bool] | None:
+    def pop_video_segment(self) -> tuple[str, bool, int] | None:
         """
         Take the next pending animation atomically so clear/play requests do not race.
         """
         with self.video_segment_lock:
+            stale_video_segments = self._pop_stale_video_segments_locked()
             if not self.video_segment_buffer:
-                return None
-            next_video_segment = self.video_segment_buffer.pop(0)
-            buffer_snapshot = list(self.video_segment_buffer)
-        logger.debug(f"pop video segment {next_video_segment[0]} from buffer({buffer_snapshot})")
+                next_video_segment = None
+                buffer_snapshot = []
+            else:
+                next_video_segment = self.video_segment_buffer.pop(0)
+                buffer_snapshot = list(self.video_segment_buffer)
+        if stale_video_segments:
+            logger.info(f"Discard stale animations before pop: {stale_video_segments}")
+        if next_video_segment is None:
+            return None
+        logger.debug(
+            f"pop video segment {next_video_segment[0]}#{next_video_segment[2]} "
+            f"from buffer({buffer_snapshot})"
+        )
         return next_video_segment
 
     def add_emotion(self, emotion_name: str, gain: int = 10):
@@ -208,9 +285,9 @@ class StreamSDK:
         # ======== Prepare Options ========
         kwargs = self._merge_kwargs(self.default_kwargs, kwargs)
         if os.getenv("LOG_DUMP_KWARGS") == "1":
-            print("=" * 20, "setup kwargs", "=" * 20)
+            logger.info(f"{'=' * 20} setup kwargs {'=' * 20}")
             print_cfg(**kwargs)
-            print("=" * 50)
+            logger.info("=" * 50)
 
         # -- avatar_registrar: template cfg --
         self.max_size = kwargs.get("max_size", 1920)
@@ -504,7 +581,7 @@ class StreamSDK:
         self.gen_frame_idx = self.video_segment_info[self.idle_name]["start"]
         self.seq_video_extractor.seek_to_frame(self.gen_frame_idx)
 
-        print(f'loaded video segments {self.video_segment_info}')
+        logger.info(f"loaded video segments {self.video_segment_info}")
 
     def activate_video_segment(self, video_segment_name: str, auto_idle: bool) -> bool:
         self.video_segment_current = video_segment_name
@@ -546,7 +623,7 @@ class StreamSDK:
             else:
                 return {}
         except Exception as e:
-            traceback.print_exc()
+            logger.exception(f"Failed to read ctrl_info for fid={fid}: {e}")
             return {}
 
     # def writer_worker(self):
@@ -820,7 +897,10 @@ class StreamSDK:
                 self.motion_stitch_queue.put(item)
                 continue
             elif isinstance(item, RenderAnimationObject):
-                self.add_video_segment(video_segment_name=item.render_data)
+                self.add_video_segment(
+                    video_segment_name=item.render_data,
+                    sequence_id=item.sequence_id,
+                )
                 continue
             else:
                 if not isinstance(item, tuple):

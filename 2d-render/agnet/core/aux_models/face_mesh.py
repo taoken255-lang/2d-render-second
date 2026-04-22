@@ -83,6 +83,11 @@ class FaceMesh:
 
 if __name__ == "__main__":
     import argparse
+    from loguru import logger
+
+    from logging_config import configure_logging
+
+    configure_logging()
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, help="model path")
@@ -98,4 +103,4 @@ if __name__ == "__main__":
     face_mesh = FaceMesh(args.model, args.device)
     roi = np.array([128, 128, 256, 256, np.pi / 2])
     mesh = face_mesh(image, roi)
-    print(mesh.shape)
+    logger.info(mesh.shape)

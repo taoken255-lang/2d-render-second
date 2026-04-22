@@ -10,5 +10,6 @@ class Config:
 	MS_MAX_SIZE = os.getenv('MS_MAX_SIZE')
 	A2M_MAX_SIZE = os.getenv('A2M_MAX_SIZE')
 	LOG_LEVEL = os.getenv('LOG_LEVEL')
+	LOG_JSON = os.getenv('LOG_JSON')
 	MAX_SIZE = os.getenv('MAX_SIZE')
 	WEIGHTS_PATH = os.getenv('WEIGHTS_PATH')

@@ -1,7 +1,6 @@
 import threading
 import queue
 import numpy as np
-import traceback
 # from tqdm import tqdm
 from loguru import logger
 
@@ -76,9 +75,9 @@ class StreamSDK:
 
         # ======== Prepare Options ========
         kwargs = self._merge_kwargs(self.default_kwargs, kwargs)
-        print("=" * 20, "setup kwargs", "=" * 20)
+        logger.info(f"{'=' * 20} setup kwargs {'=' * 20}")
         print_cfg(**kwargs)
-        print("=" * 50)
+        logger.info("=" * 50)
 
         # -- avatar_registrar: template cfg --
         self.max_size = kwargs.get("max_size", 1920)
@@ -265,7 +264,7 @@ class StreamSDK:
             else:
                 return {}
         except Exception as e:
-            traceback.print_exc()
+            logger.exception(f"Failed to read ctrl_info for fid={fid}: {e}")
             return {}
 
     # def writer_worker(self):

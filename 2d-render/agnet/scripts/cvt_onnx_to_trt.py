@@ -1,37 +1,40 @@
 import os
 import sys
 import torch
+from loguru import logger
 from polygraphy.backend.trt import CreateConfig, EngineFromNetwork, NetworkFromOnnxPath, Profile
+
+from logging_config import configure_logging
 
 
 def onnx_to_trt_for_gridsample(onnx_file, trt_file, fp16=False, plugin_file="./libgrid_sample_3d_plugin.so"):
     import tensorrt as trt
 
-    logger = trt.Logger(trt.Logger.INFO)
-    trt.init_libnvinfer_plugins(logger, "")
+    trt_logger = trt.Logger(trt.Logger.INFO)
+    trt.init_libnvinfer_plugins(trt_logger, "")
     plugin_libs = [plugin_file]
 
     onnx_path = onnx_file
     engine_path = trt_file
 
-    builder = trt.Builder(logger)
+    builder = trt.Builder(trt_logger)
     for pluginlib in plugin_libs:
         builder.get_plugin_registry().load_library(pluginlib)
     network = builder.create_network(
         1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
     )
 
-    parser = trt.OnnxParser(network, logger)
+    parser = trt.OnnxParser(network, trt_logger)
     res = parser.parse_from_file(onnx_path)  # parse from file
     if not res:
-        print(f"Fail parsing {onnx_path}")
+        logger.error(f"Fail parsing {onnx_path}")
         for i in range(parser.num_errors):  # Get error information
             error = parser.get_error(i)
-            print(error)  # Print error information
-            print(
+            logger.error(error)  # Print error information
+            logger.error(
                 f"{error.code() = }\n{error.file() = }\n{error.func() = }\n{error.line() = }\n{error.local_function_stack_size() = }"
             )
-            print(
+            logger.error(
                 f"{error.local_function_stack() = }\n{error.node_name() = }\n{error.node_operator() = }\n{error.node() = }"
             )
         parser.clear_errors()
@@ -75,7 +78,7 @@ def onnx_to_trt_for_gridsample(onnx_file, trt_file, fp16=False, plugin_file="./l
         if str(layer.type)[10:] in exclude_list:
             continue
         if "GridSample" in layer.name:
-            print(f"set {layer.name} to float32")
+            logger.info(f"set {layer.name} to float32")
             layer.precision = trt.float32
     config.plugins_to_serialize = plugin_libs
     engineString = builder.build_serialized_network(network, config)
@@ -89,17 +92,17 @@ def convert_onnx_to_trt(onnx_path, trt_path, fp16=False, optimization_level=3, p
     Convert ONNX model to TensorRT engine using Polygraphy Python API
     """
     try:
-        print(f"Converting {onnx_path} to {trt_path}")
+        logger.info(f"Converting {onnx_path} to {trt_path}")
 
         # Load plugin if provided
         if plugin_file and os.path.exists(plugin_file):
             import tensorrt as trt
-            logger = trt.Logger(trt.Logger.INFO)
-            trt.init_libnvinfer_plugins(logger, "")
+            trt_logger = trt.Logger(trt.Logger.INFO)
+            trt.init_libnvinfer_plugins(trt_logger, "")
             # Load the plugin library
             import ctypes
             ctypes.CDLL(plugin_file)
-            print(f"Loaded plugin: {plugin_file}")
+            logger.info(f"Loaded plugin: {plugin_file}")
 
         # Create TensorRT config
         config = CreateConfig(
@@ -117,13 +120,11 @@ def convert_onnx_to_trt(onnx_path, trt_path, fp16=False, optimization_level=3, p
         with open(trt_path, 'wb') as f:
             f.write(engine().serialize())
 
-        print(f"Successfully converted to {trt_path}")
+        logger.info(f"Successfully converted to {trt_path}")
         return True
 
     except Exception as e:
-        print(f"Error during conversion: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Error during conversion: {e}")
         return False
 
 
@@ -133,17 +134,17 @@ def convert_onnx_to_trt_with_profiles(onnx_path, trt_path, fp16=False, optimizat
     Convert ONNX model to TensorRT engine using Polygraphy Python API with dynamic profiles
     """
     try:
-        print(f"Converting {onnx_path} to {trt_path} with dynamic profiles")
+        logger.info(f"Converting {onnx_path} to {trt_path} with dynamic profiles")
 
         # Load plugin if provided
         if plugin_file and os.path.exists(plugin_file):
             import tensorrt as trt
-            logger = trt.Logger(trt.Logger.INFO)
-            trt.init_libnvinfer_plugins(logger, "")
+            trt_logger = trt.Logger(trt.Logger.INFO)
+            trt.init_libnvinfer_plugins(trt_logger, "")
             # Load the plugin library
             import ctypes
             ctypes.CDLL(plugin_file)
-            print(f"Loaded plugin: {plugin_file}")
+            logger.info(f"Loaded plugin: {plugin_file}")
 
         # Create TensorRT config with profiles
         config = CreateConfig(
@@ -162,17 +163,17 @@ def convert_onnx_to_trt_with_profiles(onnx_path, trt_path, fp16=False, optimizat
         with open(trt_path, 'wb') as f:
             f.write(engine().serialize())
 
-        print(f"Successfully converted to {trt_path}")
+        logger.info(f"Successfully converted to {trt_path}")
         return True
 
     except Exception as e:
-        print(f"Error during conversion: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Error during conversion: {e}")
         return False
 
 
 if __name__ == "__main__":
+    configure_logging()
+
     onnx_path = "./checkpoints/ditto_onnx/"
     trt_path = "./checkpoints/ditto_trt_5070_10.13/"
 
@@ -182,8 +183,8 @@ if __name__ == "__main__":
 
     # Check if plugin file exists
     if not os.path.exists(grid_sample_plugin_file):
-        print(f"Warning: Plugin file not found at {grid_sample_plugin_file}")
-        print("Please build the plugin first or check the path.")
+        logger.warning(f"Plugin file not found at {grid_sample_plugin_file}")
+        logger.warning("Please build the plugin first or check the path.")
         grid_sample_plugin_file = None
     names = [i[:-5] for i in os.listdir(onnx_path) if i.endswith(".onnx")]
     for name in names:
@@ -193,7 +194,7 @@ if __name__ == "__main__":
         if name == "warp_network_ori":
             continue
         if os.path.isfile(trt_file):
-            print("=" * 20, f"{name} skip", "=" * 20)
+            logger.info(f"{'=' * 20} {name} skip {'=' * 20}")
             continue
         if name == "hubert":
             # Create profiles for hubert with dynamic shapes
@@ -203,7 +204,7 @@ if __name__ == "__main__":
             success = convert_onnx_to_trt_with_profiles(onnx_file, trt_file, fp16=fp16, optimization_level=5,
                                                         profiles=profiles)
             if not success:
-                print(f"Failed to convert {name}")
+                logger.error(f"Failed to convert {name}")
                 continue
         elif name == "warp_network":
             onnx_to_trt_for_gridsample(onnx_file, trt_file, fp16, plugin_file=grid_sample_plugin_file)
@@ -212,10 +213,10 @@ if __name__ == "__main__":
             # Use the general conversion function
             success = convert_onnx_to_trt(onnx_file, trt_file, fp16=fp16, optimization_level=5)
             if not success:
-                print(f"Failed to convert {name}")
+                logger.error(f"Failed to convert {name}")
                 continue
 
 
-    print("Conversion completed successfully!")
+    logger.info("Conversion completed successfully!")
 
 # RUN python3 agnet/scripts/cvt_onnx_to_trt.py FROM /app
