@@ -428,10 +428,11 @@ async def send_user_event(websocket: WebSocket):
 
 @app.get("/health")
 async def health():
-    try:
-        await voices()
-    except:
-        return Response(status_code=500)
+    if settings.healthcheck_enabled:
+        try:
+            await voices()
+        except:
+            return Response(status_code=500)
     return Response(status_code=200)
 
 # @app.get("/render_status")

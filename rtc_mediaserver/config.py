@@ -79,5 +79,7 @@ class Settings(BaseSettings):
     ffmpeg_debug: bool = False
     watchdog_enabled: bool = True
 
+    healthcheck_enabled: bool = True
+
 # Global settings instance
 settings = Settings() 
