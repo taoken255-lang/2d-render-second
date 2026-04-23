@@ -6,8 +6,8 @@ import traceback
 from loguru import logger
 
 
-LOG_FORMAT = "{time:YYYY-MM-DD HH:mm:ss.SSS} [{level}] {name}: {message}"
-JSON_LOG_ENV = "LOG_JSON"
+TEXT_LOG_FORMAT = "{time:YYYY-MM-DD HH:mm:ss.SSS} [{level}] {name}: {message}"
+LOG_FORMAT_ENV = "LOG_FORMAT"
 JSON_LOG_FORMAT = "%(timestamp)s %(level)s %(logger)s %(message)s %(request_id)s %(exception)s"
 
 
@@ -16,6 +16,20 @@ def _is_truthy(value: str | None) -> bool:
         return False
 
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_log_format(log_format: str | None) -> str:
+    resolved_log_format = (log_format or os.getenv(LOG_FORMAT_ENV) or "").strip().lower()
+    if resolved_log_format == "json":
+        return "json"
+
+    if resolved_log_format in {"", "text", "plain", "console"}:
+        return "text"
+
+    if _is_truthy(resolved_log_format):
+        return "json"
+
+    return "text"
 
 
 def _build_json_formatter():
@@ -71,15 +85,13 @@ class JsonLogSink:
         self.stream.flush()
 
 
-def configure_logging(level: str | None = None, json_logs: str | None = None) -> None:
+def configure_logging(level: str | None = None, log_format: str | None = None) -> None:
     resolved_level = (level or os.getenv("LOG_LEVEL") or "INFO").upper()
-    json_logging_enabled = _is_truthy(
-        json_logs if json_logs is not None else os.getenv(JSON_LOG_ENV)
-    )
+    resolved_log_format = _resolve_log_format(log_format)
 
     logger.configure(extra={"request_id": "-"})
     logger.remove()
-    if json_logging_enabled:
+    if resolved_log_format == "json":
         logger.add(
             JsonLogSink(sys.stdout),
             level=resolved_level,
@@ -90,7 +102,7 @@ def configure_logging(level: str | None = None, json_logs: str | None = None) ->
 
     logger.add(
         sys.stdout,
-        format=LOG_FORMAT,
+        format=TEXT_LOG_FORMAT,
         level=resolved_level,
         colorize=False,
         backtrace=True,

@@ -14,6 +14,10 @@ _TEXT_FORMAT = "text"
 _JSON_FORMAT = "json"
 _LOGGING_LOCK = threading.Lock()
 _LOGGING_CONFIGURED = False
+_DEFAULT_FALLBACK_LEVEL = logging.DEBUG
+_LEVEL_ALIASES = {
+    "TRACE": "DEBUG",
+}
 
 
 def setup_logging(
@@ -38,7 +42,8 @@ def setup_logging(
 
         root_logger = logging.getLogger()
         root_logger.handlers.clear()
-        root_logger.setLevel(_resolve_level(configured_level))
+        resolved_root_level, root_warning = _resolve_level(configured_level)
+        root_logger.setLevel(resolved_root_level)
 
         for handler in _create_handlers(
             log_format=configured_format,
@@ -50,6 +55,8 @@ def setup_logging(
 
         _configure_specific_loggers(settings)
         _LOGGING_CONFIGURED = True
+        if root_warning:
+            root_logger.warning(root_warning)
 
 
 def _create_handlers(
@@ -62,7 +69,7 @@ def _create_handlers(
     handlers: list[logging.Handler] = []
 
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(_resolve_level(active_settings.log_level))
+    console_handler.setLevel(_resolve_level(active_settings.log_level)[0])
     console_handler.setFormatter(
         _build_formatter(log_format, format_string, active_settings)
     )
@@ -101,16 +108,28 @@ def _build_formatter(
     )
 
 
-def _resolve_level(level: str) -> int:
-    resolved_level = getattr(logging, level.upper(), None)
-    if not isinstance(resolved_level, int):
-        raise ValueError(f"Unsupported log level: {level}")
-    return resolved_level
+def _resolve_level(level: str) -> tuple[int, Optional[str]]:
+    normalized_level = str(level).upper()
+    mapped_level = _LEVEL_ALIASES.get(normalized_level, normalized_level)
+    resolved_level = getattr(logging, mapped_level, None)
+    if isinstance(resolved_level, int):
+        if mapped_level != normalized_level:
+            return resolved_level, (
+                f"Non-standard log level '{level}' mapped to '{mapped_level}'."
+            )
+        return resolved_level, None
+
+    return _DEFAULT_FALLBACK_LEVEL, (
+        f"Unknown log level '{level}' mapped to "
+        f"'{logging.getLevelName(_DEFAULT_FALLBACK_LEVEL)}'."
+    )
 
 
 def _configure_specific_loggers(active_settings: Settings) -> None:
-    third_party_level = _resolve_level(active_settings.third_party_log_level)
-    app_level = _resolve_level(active_settings.log_level)
+    third_party_level, third_party_warning = _resolve_level(
+        active_settings.third_party_log_level
+    )
+    app_level, app_warning = _resolve_level(active_settings.log_level)
 
     logging.getLogger("uvicorn.access").setLevel(third_party_level)
     logging.getLogger("uvicorn.error").setLevel(third_party_level)
@@ -119,6 +138,11 @@ def _configure_specific_loggers(active_settings: Settings) -> None:
     logging.getLogger("av").setLevel(third_party_level)
     logging.getLogger("grpc").setLevel(third_party_level)
     logging.getLogger("rtc_mediaserver").setLevel(app_level)
+    logger = logging.getLogger("rtc_mediaserver.logging")
+    if app_warning:
+        logger.warning(app_warning)
+    if third_party_warning:
+        logger.warning(third_party_warning)
 
 
 def get_logger(name: str) -> logging.Logger:

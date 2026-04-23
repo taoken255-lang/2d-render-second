@@ -13,7 +13,7 @@ from proto import render_service_pb2_grpc
 from service.streaming import StreamingService
 
 
-configure_logging(Config.LOG_LEVEL, Config.LOG_JSON)
+configure_logging(Config.LOG_LEVEL, Config.LOG_FORMAT)
 
 
 def grpc_service() -> None:
