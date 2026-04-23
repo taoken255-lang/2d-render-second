@@ -15,12 +15,10 @@ from aiortc import MediaStreamTrack  # type: ignore
 from av.frame import Frame  # type: ignore
 from av.packet import Packet  # type: ignore
 
-from rtc_mediaserver.logging_config import get_logger, setup_default_logging
+from rtc_mediaserver.logging_config import get_logger
 from .constants import AUDIO_SETTINGS, VIDEO_CLOCK, VIDEO_PTIME, VIDEO_TB, USER_EVENTS, INTERRUPT_CALLED, STATE
 from .shared import SYNC_QUEUE, SYNC_QUEUE_SEM
 
-# Make sure logging is configured as early as possible
-setup_default_logging()
 logger = get_logger(__name__)
 
 __all__ = [

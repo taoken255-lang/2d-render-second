@@ -16,15 +16,13 @@ from typing import Deque, List, Tuple
 import numpy as np  # type: ignore
 from PIL import Image
 
-from rtc_mediaserver.logging_config import get_logger, setup_default_logging
+from rtc_mediaserver.logging_config import get_logger
 from .constants import DEFAULT_IMAGE_PATH, AUDIO_SETTINGS, CAN_SEND_FRAMES, \
     FRAMES_PER_CHUNK, USER_EVENTS, INTERRUPT_CALLED, COMMANDS_QUEUE, STATE, SYNTHESIZE_IN_PROGRESS, AUDIO_CHUNK_MS
 from .shared import AUDIO_SECOND_QUEUE, SYNC_QUEUE, SYNC_QUEUE_SEM
 from ..config import settings
 from ..events import ServiceEvents, Conditions
 
-# Configure logging early
-setup_default_logging()
 logger = get_logger(__name__)
 
 import grpc  # type: ignore

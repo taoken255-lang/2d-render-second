@@ -12,7 +12,7 @@ import numpy as np
 import websockets
 
 from rtc_mediaserver.config import settings
-from rtc_mediaserver.logging_config import get_logger, setup_default_logging
+from rtc_mediaserver.logging_config import get_logger
 from rtc_mediaserver.webrtc_server.client_state import ClientState
 from rtc_mediaserver.webrtc_server.constants import AUDIO_SETTINGS, SENTENCES_QUEUE, SYNTHESIZE_IN_PROGRESS, STATE, \
     RTC_STREAM_CONNECTED

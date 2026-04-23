@@ -11,11 +11,10 @@ import numpy as np
 from grpc import aio
 
 from rtc_mediaserver.config import settings
-from rtc_mediaserver.logging_config import get_logger, setup_default_logging
+from rtc_mediaserver.logging_config import get_logger
 from rtc_mediaserver.proto import render_service_pb2, render_service_pb2_grpc
 from rtc_mediaserver.webrtc_server.tools import cleanup_old_results
 
-setup_default_logging()
 logger = get_logger(__name__)
 
 

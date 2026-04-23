@@ -50,25 +50,23 @@ async def warm_up():
 if __name__ == "__main__":  # pragma: no cover
     asyncio.run(warm_up())
     import uvicorn
+    uvicorn_kwargs = {
+        "app": "rtc_mediaserver.webrtc_server.api:app",
+        "host": "0.0.0.0",
+        "port": settings.port,
+        "reload": False,
+        "access_log": True,
+        "loop": "asyncio",
+        "log_config": None,
+        "log_level": settings.log_level.lower(),
+    }
     if settings.https:
         logger.info(f"Starting secure Simple WebRTC Server → http://localhost:{settings.port}")
         uvicorn.run(
-            "rtc_mediaserver.webrtc_server.api:app",
-            host="0.0.0.0",
-            port=settings.port,
-            reload=False,
-            access_log=True,
+            **uvicorn_kwargs,
             ssl_keyfile=settings.ssl_key,
             ssl_certfile=settings.ssl_cert,
-            loop="asyncio"
         )
     else:
         logger.info(f"Starting Simple WebRTC Server → http://localhost:{settings.port}")
-        uvicorn.run(
-            "rtc_mediaserver.webrtc_server.api:app",
-            host="0.0.0.0",
-            port=settings.port,
-            reload=False,
-            access_log=True,
-            loop="asyncio"
-        )
+        uvicorn.run(**uvicorn_kwargs)
