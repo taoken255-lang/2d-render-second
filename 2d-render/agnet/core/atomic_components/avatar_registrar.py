@@ -50,6 +50,93 @@ def load_image(image_bytes, max_dim=-1):   # <----------------------------------
     return img
 
 
+def _feature_to_float16_numpy(feature):
+    if isinstance(feature, torch.Tensor):
+        return feature.detach().cpu().numpy().astype(np.float16, copy=False)
+    return np.asarray(feature).astype(np.float16, copy=False)
+
+
+def _load_f_s_lst_from_npy(full_npy_path):
+    f_s_np = np.load(full_npy_path, mmap_mode="r")
+    return [torch.from_numpy(f_s_np[i]) for i in range(len(f_s_np))]
+
+
+class _StreamingFSCacheWriter:
+    def __init__(self, temp_npy_path, frame_count):
+        self.temp_npy_path = temp_npy_path
+        self.trimmed_temp_npy_path = f"{temp_npy_path}.trim"
+        self.frame_count = frame_count
+        self.written_count = 0
+        self.feature_shape = None
+        self._memmap = None
+
+    def write(self, feature):
+        feature = _feature_to_float16_numpy(feature)
+        if self._memmap is None:
+            self.feature_shape = feature.shape
+            self._memmap = np.lib.format.open_memmap(
+                self.temp_npy_path,
+                mode="w+",
+                dtype=np.float16,
+                shape=(self.frame_count, *self.feature_shape),
+            )
+        elif feature.shape != self.feature_shape:
+            raise ValueError(
+                f"f_s shape {feature.shape} != expected {self.feature_shape}"
+            )
+        if self.written_count >= self.frame_count:
+            raise ValueError(
+                f"f_s frame count exceeded expected {self.frame_count}"
+            )
+        self._memmap[self.written_count] = feature
+        self.written_count += 1
+
+    def close(self):
+        if self._memmap is not None:
+            self._memmap.flush()
+            del self._memmap
+            self._memmap = None
+
+    def finish_temp(self):
+        if self.written_count <= 0:
+            raise ValueError("f_s cache is empty")
+        self.close()
+        if self.written_count < self.frame_count:
+            logger.warning(
+                f"Trimming f_s cache from {self.frame_count} to {self.written_count} frames"
+            )
+            self._trim_temp_file()
+        logger.info("TENSORS CONVERTED")
+
+    def discard(self):
+        self.close()
+        for temp_path in (self.temp_npy_path, self.trimmed_temp_npy_path):
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError:
+                logger.warning(f"Failed to remove partial cache file '{temp_path}'")
+
+    def _trim_temp_file(self):
+        src = np.load(self.temp_npy_path, mmap_mode="r")
+        try:
+            dst = np.lib.format.open_memmap(
+                self.trimmed_temp_npy_path,
+                mode="w+",
+                dtype=src.dtype,
+                shape=(self.written_count, *src.shape[1:]),
+            )
+            chunk_rows = 64
+            for start in range(0, self.written_count, chunk_rows):
+                end = min(start + chunk_rows, self.written_count)
+                dst[start:end] = src[start:end]
+            dst.flush()
+            del dst
+        finally:
+            del src
+        os.replace(self.trimmed_temp_npy_path, self.temp_npy_path)
+
+
 def smooth_x_s_info_lst(x_s_info_list, ignore_keys=(), smo_k=13):
     keys = x_s_info_list[0].keys()
     N = len(x_s_info_list)
@@ -139,6 +226,33 @@ class AvatarRegistrar:
         else:
             logger.exception(f"VIDEO CONVERTATION ERROR {result.stderr}")
 
+    def _get_video_frame_count(self, source_path, n_frames):
+        if n_frames > 0:
+            return n_frames
+        try:
+            import av
+
+            container = av.open(source_path)
+            try:
+                frame_count = int(container.streams.video[0].frames or 0)
+            finally:
+                container.close()
+            if frame_count > 0:
+                return frame_count
+        except Exception as exc:
+            logger.warning(f"Failed to read frame count via PyAV: {exc}")
+        try:
+            reader = imageio.get_reader(source_path, "ffmpeg")
+            try:
+                frame_count = reader.count_frames()
+            finally:
+                reader.close()
+            if np.isfinite(frame_count) and int(frame_count) > 0:
+                return int(frame_count)
+        except Exception as exc:
+            logger.warning(f"Failed to count frames via imageio: {exc}")
+        return None
+
     # def _load_cache(self, cache_path):
     #     if os.path.exists(cache_path):
     #         try:
@@ -157,11 +271,7 @@ class AvatarRegistrar:
                 with open(full_pkl_path, 'rb') as f:
                     result = pickle.load(f)
                 logger.info("PKL GOT")
-                f_s_np = np.load(
-                    full_npy_path,
-                    mmap_mode="r"  # ❗ НЕ загружает в RAM
-                )
-                f_s_np = [torch.from_numpy(f_s_np[i]) for i in range(len(f_s_np))]
+                f_s_np = _load_f_s_lst_from_npy(full_npy_path)
                 logger.info(f"{type(f_s_np), len(f_s_np)}")
                 logger.info("NPY GOT")
                 result["f_s_lst"] = f_s_np
@@ -174,23 +284,39 @@ class AvatarRegistrar:
         logger.info("SAVING CACHE")
         full_pkl_path = f"{cache_path}/{file_name}.pkl"
         full_npy_path = f"{cache_path}/{file_name}.npy"
+        temp_pkl_path = f"{full_pkl_path}.tmp"
+        temp_npy_path = f"{full_npy_path}.tmp"
         try:
             f_s_lst = source_info.pop("f_s_lst")
-            arr = np.stack([
-                t.detach().cpu().numpy().astype(np.float16, copy=False)
-                for t in f_s_lst
-            ])
+            if not f_s_lst:
+                raise ValueError("f_s_lst is empty")
+
+            first_arr = _feature_to_float16_numpy(f_s_lst[0])
+            f_s_np = np.lib.format.open_memmap(
+                temp_npy_path,
+                mode="w+",
+                dtype=np.float16,
+                shape=(len(f_s_lst), *first_arr.shape),
+            )
+            f_s_np[0] = first_arr
+            expected_shape = first_arr.shape
+            for idx, tensor in enumerate(f_s_lst[1:], start=1):
+                arr = _feature_to_float16_numpy(tensor)
+                if arr.shape != expected_shape:
+                    raise ValueError(
+                        f"f_s_lst[{idx}] shape {arr.shape} != {expected_shape}"
+                    )
+                f_s_np[idx] = arr
+            f_s_np.flush()
+            del f_s_np
             logger.info("TENSORS CONVERTED")
             # temp_path = f"{cache_path[:-4]}_temp_{datetime.now().strftime('%H:%M:%S')}.pkl"
             # logger.info(f"SAVING IN TEMP FILE {temp_path}")
-            with open(full_pkl_path, 'wb') as f:
+            with open(temp_pkl_path, 'wb') as f:
                 pickle.dump(source_info, f)
+            os.replace(temp_pkl_path, full_pkl_path)
             logger.info("PKL SAVED")
-            np.save(
-                full_npy_path,
-                arr,
-                allow_pickle=False
-            )
+            os.replace(temp_npy_path, full_npy_path)
             logger.info("NPY SAVED")
             source_info["f_s_lst"] = f_s_lst
         except (OSError, ValueError, pickle.PickleError):
@@ -199,7 +325,46 @@ class AvatarRegistrar:
                 full_pkl_path,
                 full_npy_path,
             )
+            for temp_path in (temp_pkl_path, temp_npy_path):
+                try:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                except OSError:
+                    logger.warning(f"Failed to remove partial cache file '{temp_path}'")
             raise
+
+    def _save_streamed_cache(self, cache_path, file_name, source_info, f_s_cache_writer):
+        logger.info("SAVING CACHE")
+        full_pkl_path = f"{cache_path}/{file_name}.pkl"
+        full_npy_path = f"{cache_path}/{file_name}.npy"
+        temp_pkl_path = f"{full_pkl_path}.tmp"
+        f_s_lst = source_info.pop("f_s_lst", None)
+        try:
+            with open(temp_pkl_path, 'wb') as f:
+                pickle.dump(source_info, f)
+            f_s_cache_writer.finish_temp()
+            if os.path.exists(full_pkl_path):
+                os.remove(full_pkl_path)
+            os.replace(f_s_cache_writer.temp_npy_path, full_npy_path)
+            logger.info("NPY SAVED")
+            os.replace(temp_pkl_path, full_pkl_path)
+            logger.info("PKL SAVED")
+        except (OSError, ValueError, pickle.PickleError):
+            logger.exception(
+                "Failed to save streamed cache '{}' / '{}'",
+                full_pkl_path,
+                full_npy_path,
+            )
+            f_s_cache_writer.discard()
+            try:
+                if os.path.exists(temp_pkl_path):
+                    os.remove(temp_pkl_path)
+            except OSError:
+                logger.warning(f"Failed to remove partial cache file '{temp_pkl_path}'")
+            raise
+        finally:
+            if f_s_lst is not None:
+                source_info["f_s_lst"] = f_s_lst
 
     def register(
             self,
@@ -231,6 +396,7 @@ class AvatarRegistrar:
         t_avatar = TimingTracker(enabled=True, log_each=False)
         cache_key = "-"
         cache_hit = "bypass"
+        f_s_cache_writer = None
         # Stream frames sequentially
         if type(source_path) == bytes:
             is_image_flag = True
@@ -271,7 +437,7 @@ class AvatarRegistrar:
             full_npy_path = f"{cache_path}/{file_name}.npy"
             cached_result = None
             cache_bytes = 0
-            if os.path.exists(full_pkl_path):
+            if os.path.exists(full_pkl_path) and os.path.exists(full_npy_path):
                 try:
                     cache_bytes = os.path.getsize(full_pkl_path)
                     cache_load_start = time.perf_counter()
@@ -283,10 +449,8 @@ class AvatarRegistrar:
                     t_avatar.add_ms("avatar_cache_read", timed_reader.read_ms)
                     t_avatar.add_ms("avatar_cache_deserialize", max(cache_load_ms - timed_reader.read_ms, 0.0))
                     # Load f_s_lst from separate npy file
-                    if os.path.exists(full_npy_path):
-                        f_s_np = np.load(full_npy_path, mmap_mode="r")
-                        cached_result["f_s_lst"] = [torch.from_numpy(f_s_np[i]) for i in range(len(f_s_np))]
-                        logger.info(f"NPY loaded: {type(cached_result['f_s_lst'])}, {len(cached_result['f_s_lst'])}")
+                    cached_result["f_s_lst"] = _load_f_s_lst_from_npy(full_npy_path)
+                    logger.info(f"NPY loaded: {type(cached_result['f_s_lst'])}, {len(cached_result['f_s_lst'])}")
                 except Exception:
                     cached_result = None
             if cached_result is not None:
@@ -303,6 +467,19 @@ class AvatarRegistrar:
             cache_hit = "miss"
             logger.info("NO CACHE FOUND, CREATING")
 
+            stream_f_s_cache = os.getenv("AVATAR_STREAM_F_S_CACHE", "1") != "0"
+            expected_frame_count = None
+            if stream_f_s_cache:
+                expected_frame_count = self._get_video_frame_count(source_path, n_frames)
+                if expected_frame_count is None:
+                    stream_f_s_cache = False
+                    logger.warning("Falling back to in-memory f_s cache save")
+                else:
+                    logger.info(f"Streaming f_s cache enabled for {expected_frame_count} frames")
+                    f_s_cache_writer = _StreamingFSCacheWriter(
+                        f"{full_npy_path}.tmp",
+                        expected_frame_count,
+                    )
 
             with t_avatar.measure("avatar_video_processing"):
                 reader = imageio.get_reader(source_path, "ffmpeg")
@@ -323,11 +500,23 @@ class AvatarRegistrar:
                             except Exception as e:
                                 self._raise_source2info_error(source_path, idx, e)
 
-                            info['f_s'] = torch.from_numpy(info['f_s'].astype(np.float16))
-                            for k in keys:
-                                source_info[f"{k}_lst"].append(info[k])
+                            f_s = _feature_to_float16_numpy(info["f_s"])
+                            if f_s_cache_writer is not None:
+                                f_s_cache_writer.write(f_s)
+                                for k in keys:
+                                    if k != "f_s":
+                                        source_info[f"{k}_lst"].append(info[k])
+                                del info["f_s"]
+                            else:
+                                info["f_s"] = torch.from_numpy(f_s)
+                                for k in keys:
+                                    source_info[f"{k}_lst"].append(info[k])
                             last_lmk = info["lmk203"]
                             pbar.update()
+                    except Exception:
+                        if f_s_cache_writer is not None:
+                            f_s_cache_writer.discard()
+                        raise
                     finally:
                         pbar.close()
                 finally:
@@ -338,6 +527,11 @@ class AvatarRegistrar:
         else:
             raise ValueError(f"Unsupported source type: {source_path}")
 
+        if not source_info["x_s_info_lst"]:
+            if f_s_cache_writer is not None:
+                f_s_cache_writer.discard()
+            raise ValueError(f"No frames were registered for source: {source_path}")
+
         sc_f0 = source_info['x_s_info_lst'][0]['kp'].flatten()
 
         source_info["sc"] = sc_f0
@@ -345,7 +539,12 @@ class AvatarRegistrar:
         if not is_image_flag:
             logger.info("CACHE CREATED, SAVING")
             with t_avatar.measure("avatar_cache_save"):
-                self._save_cache(cache_path, file_name, source_info)
+                if f_s_cache_writer is not None:
+                    self._save_streamed_cache(cache_path, file_name, source_info, f_s_cache_writer)
+                    source_info["f_s_lst"] = _load_f_s_lst_from_npy(full_npy_path)
+                    logger.info(f"NPY loaded: {type(source_info['f_s_lst'])}, {len(source_info['f_s_lst'])}")
+                else:
+                    self._save_cache(cache_path, file_name, source_info)
 
         t_avatar.log_summary(label="AVATAR", include_points=False, extra={"cache_hit": cache_hit, "cache_key": cache_key})
 

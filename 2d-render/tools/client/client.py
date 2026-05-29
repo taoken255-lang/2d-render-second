@@ -1,5 +1,6 @@
 import grpc
 from grpc import ssl_channel_credentials
+from google.protobuf.struct_pb2 import Struct
 from proto.render_service_pb2_grpc import RenderServiceStub
 from proto.render_service_pb2 import RenderRequest, ImageChunk, AudioChunk, PlayAnimation, SetAvatar, SetEmotion, InfoRequest
 from loguru import logger
@@ -15,14 +16,39 @@ import cv2
 import os
 
 
+TEST_AGNET_CONFIG_OVERRIDE = {
+	"use_d_keys": {"exp": 1.0, "pitch": 0.3, "yaw": 0.3, "roll": 0.3, "t": 1},
+	"sampling_timesteps": 15,
+	"fade_type": "s",
+	"emo": [4, 5, 4, 5],
+	"ch_info": None,
+	"ctrl_kwargs": {"delta_pitch": -3},
+	"fix_exp_a1_alpha": 0.15,
+	"overall_ctrl_info": None,
+}
+TEST_AGNET_CONFIG_MERGE_MODE = 1
+
+
+def build_test_set_avatar(avatar_id: str) -> SetAvatar:
+	override = Struct()
+	override.update(TEST_AGNET_CONFIG_OVERRIDE)
+	return SetAvatar(
+		avatar_id=avatar_id,
+		idle_name="idle",
+		agnet_config_override=override,
+		agnet_config_merge_mode=TEST_AGNET_CONFIG_MERGE_MODE,
+	)
+
 configure_logging()
 
 
 def video_request(audio_file, avatar_id):
 	logger.info("start video request")
+	logger.info(audio_file)
 	with wave.open(audio_file, 'rb') as wf:
 		logger.info("file opened")
-		yield RenderRequest(set_avatar=SetAvatar(avatar_id=avatar_id, idle_name="idle"), online=False, alpha=False, output_format="RGB")
+		logger.info(f"SET_AVATAR TEST OVERRIDE: {TEST_AGNET_CONFIG_OVERRIDE}")
+		yield RenderRequest(set_avatar=build_test_set_avatar(avatar_id), online=False, alpha=False, output_format="RGB")
 		logger.info("AVATAR SENT")
 
 		sample_rate = wf.getframerate()

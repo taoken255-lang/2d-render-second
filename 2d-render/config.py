@@ -13,3 +13,5 @@ class Config:
 	LOG_FORMAT = os.getenv('LOG_FORMAT')
 	MAX_SIZE = os.getenv('MAX_SIZE')
 	WEIGHTS_PATH = os.getenv('WEIGHTS_PATH')
+	ENGINE_ADAPTER_HOST = os.getenv('ENGINE_ADAPTER_HOST', '0.0.0.0')
+	ENGINE_ADAPTER_PORT = os.getenv('ENGINE_ADAPTER_PORT', '8003')

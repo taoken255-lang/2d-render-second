@@ -81,7 +81,7 @@ def add_RenderServiceServicer_to_server(servicer, server):
     server.add_registered_method_handlers('Render.RenderService', rpc_method_handlers)
 
 
-# This class is part of an EXPERIMENTAL API.
+ # This class is part of an EXPERIMENTAL API.
 class RenderService(object):
     """Missing associated documentation comment in .proto file."""
 

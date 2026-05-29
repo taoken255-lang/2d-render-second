@@ -1,8 +1,10 @@
 from multiprocessing import Queue as mQueue, Process, Value
+from pathlib import Path
 from threading import Event, Thread, Lock
 from queue import Queue as tQueue
 from grpc import RpcError
 from config import Config
+from google.protobuf.json_format import MessageToDict
 from loguru import logger
 from uuid import uuid4
 import numpy as np
@@ -23,6 +25,8 @@ from service.progress.timing import TimingTracker
 from config import Config
 
 TARGET_FPS = 25
+AGNET_CONFIG_SKIP_AVATAR_CONFIG = 0
+AGNET_CONFIG_MERGE_WITH_AVATAR_CONFIG = 1
 
 class SharedValue:
 	def __init__(self, value):
@@ -44,6 +48,66 @@ def clear_queue(q):
 			q.get_nowait()
 	except Exception:
 		return
+
+
+# google.protobuf.Struct stores every number as a double.
+# This restores integer-like values so JSON config overrides keep their original shape.
+def _coerce_integral_floats(value):
+	if isinstance(value, dict):
+		return {key: _coerce_integral_floats(item) for key, item in value.items()}
+	if isinstance(value, list):
+		return [_coerce_integral_floats(item) for item in value]
+	if isinstance(value, float) and value.is_integer():
+		return int(value)
+	return value
+
+
+def _normalize_agnet_config_override(config: dict) -> dict:
+	result = _coerce_integral_floats(config)
+
+	if "sampling_timesteps" in result and result["sampling_timesteps"] is not None:
+		result["sampling_timesteps"] = int(result["sampling_timesteps"])
+	if "fix_exp_a1_alpha" in result and result["fix_exp_a1_alpha"] is not None:
+		result["fix_exp_a1_alpha"] = float(result["fix_exp_a1_alpha"])
+
+	return result
+
+
+def _extract_agnet_config_override(set_avatar) -> dict:
+	if not set_avatar.HasField("agnet_config_override"):
+		return {}
+
+	override = MessageToDict(
+		set_avatar.agnet_config_override,
+		preserving_proto_field_name=True,
+	)
+	return _normalize_agnet_config_override(override)
+
+
+def _merge_agnet_configs(base_config: dict | None, override_config: dict | None) -> dict:
+	merged = dict(base_config or {})
+	merged.update(override_config or {})
+	return merged
+
+
+def _extract_agnet_config_merge_mode(set_avatar) -> int | None:
+	if not set_avatar.HasField("agnet_config_merge_mode"):
+		return None
+	return int(set_avatar.agnet_config_merge_mode)
+
+
+def _resolve_agnet_config(base_config: dict | None, override_config: dict | None, merge_mode: int | None) -> dict:
+	if merge_mode in (None, AGNET_CONFIG_MERGE_WITH_AVATAR_CONFIG):
+		return _merge_agnet_configs(base_config, override_config)
+
+	if merge_mode == AGNET_CONFIG_SKIP_AVATAR_CONFIG:
+		return dict(override_config or {})
+
+	logger.warning(
+		f"Unknown agnet_config_merge_mode={merge_mode}; "
+		f"falling back to merge with avatar config.json"
+	)
+	return _merge_agnet_configs(base_config, override_config)
 
 #
 # class InputObject:
@@ -94,13 +158,19 @@ def get_avatars(folder_path="/app/assets/"):
 	return result
 
 
-def get_latest_version_folder(base_path: str) -> str | None:
+def get_latest_version_folder(base_path: str, version: int = None) -> str | None:
+	if version:
+		version_path = Path(os.path.join(base_path, str(version)))
+		if version_path.exists():
+			return str(version)
+		return None
+
 	versions = []
 	for name in os.listdir(base_path):
 		if os.path.isdir(os.path.join(base_path, name)):
 			try:
-				major, middle, minor = map(int, name.split("."))
-				versions.append((major, middle, minor, name))
+				major = int(name)
+				versions.append((major, name))
 			except ValueError:
 				logger.trace(f"FOUND NOVERSION FOLDER NAME {name}")
 				continue
@@ -111,8 +181,8 @@ def get_latest_version_folder(base_path: str) -> str | None:
 	if not versions:
 		return None
 
-	versions.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
-	return versions[0][3]
+	versions.sort(key=lambda x: x[0], reverse=True)
+	return versions[0][1]
 
 
 def render_stream(chunk, render, is_last=False):
@@ -304,23 +374,31 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 
 			elif chunk.data_type == IPCDataType.COMMAND:
 				# INFO: rare event, explicit user action
-				logger.info(f"RECEIVE COMMAND {chunk.data.command_type} {chunk.data.command_data}")
+				logger.info(f"RECEIVE COMMAND {chunk.data.command_type} {chunk.data.command_data} {chunk.data.additional_data}")
 				if chunk.data.command_type == CommandDataType.SetAvatar:
 					# render.set_avatar(avatar_id=chunk.data.command_data)
 
 					avatar_name = chunk.data.command_data
+					avatar_version = chunk.data.additional_data.get("version", None)
+					logger.info(f"[AVATAR VERSION] streaming.SetAvatar avatar_name={avatar_name} additional_data.version={avatar_version}")
 					idle_name = chunk.data.additional_data.get("idle_name", "idle") or "idle"
+					agnet_config_override = chunk.data.additional_data.get("agnet_config_override", {})
+					agnet_config_merge_mode = chunk.data.additional_data.get("agnet_config_merge_mode")
 
 					if avatar_name not in get_avatars():
 						video_queue.put(ErrorObject(error_type=ErrorDataType.Avatar,
 						                            error_message=f"Avatar {avatar_name} does not exist"))
 						continue
 
-					last_version = get_latest_version_folder(f"/app/assets/{avatar_name}")
+					last_version = get_latest_version_folder(f"/app/assets/{avatar_name}", avatar_version)
+					logger.info(f"[AVATAR VERSION] streaming.SetAvatar selected_version_folder={last_version}, src_version={avatar_version}")
 					if last_version:
 						base_path = f"/app/assets/{avatar_name}/{last_version}"
 					else:
 						base_path = f"/app/assets/{avatar_name}"
+
+					logger.info(f"[ASSETS] Avatar asset path: {base_path}")
+
 					reader = imageio.get_reader(f"{base_path}/{avatar_name}.mp4")
 					size = reader.get_meta_data()["size"]
 					img_width = int(size[0])
@@ -329,9 +407,22 @@ def start_render_process(audio_queue, video_queue, start_time, sampling_timestam
 
 					if os.path.exists(f"{base_path}/config.json"):
 						with open(f"{base_path}/config.json", "r", encoding="utf-8") as f:
-							agnet_config = json.load(f)
+							avatar_agnet_config = json.load(f)
 					else:
-						agnet_config = {}
+						avatar_agnet_config = {}
+					agnet_config = _resolve_agnet_config(
+						avatar_agnet_config,
+						agnet_config_override,
+						agnet_config_merge_mode,
+					)
+					logger.info(
+						f"Using agnet_config_merge_mode="
+						f"{AGNET_CONFIG_MERGE_WITH_AVATAR_CONFIG if agnet_config_merge_mode is None else agnet_config_merge_mode}"
+					)
+					if agnet_config_override:
+						logger.info(
+							f"Applied gRPC agnet_config_override keys: {sorted(agnet_config_override.keys())}"
+						)
 
 					emotions_exist = os.path.exists(f"{base_path}/emotions/")
 					send_wall_point("avatar_start")
@@ -483,15 +574,23 @@ def reader_thread(request_iterator, audio_queue, video_queue, is_online, is_alph
 						is_alpha.set()
 					sampling_timestamps.value = chunk.sampling_timestamps
 					output_format.set("BGRA" if chunk.output_format == "" else chunk.output_format)
+					agnet_config_override = _extract_agnet_config_override(chunk.set_avatar)
+					agnet_config_merge_mode = _extract_agnet_config_merge_mode(chunk.set_avatar)
 					audio_queue.put({"is_online": chunk.online})
 					audio_queue.put(IPCObject(data_type=IPCDataType.COMMAND,
 					                          data=CommandObject(command_type=CommandDataType.SetAvatar,
-					                                             command_data=chunk.set_avatar.avatar_id, additional_data={"idle_name": chunk.set_avatar.idle_name})))
+					                                             command_data=chunk.set_avatar.avatar_id,
+					                                             additional_data={
+						                                             "idle_name": chunk.set_avatar.idle_name,
+																	 "version": chunk.set_avatar.version,
+						                                             "agnet_config_override": agnet_config_override,
+						                                             "agnet_config_merge_mode": agnet_config_merge_mode
+																 })))
 					init_sent = True
 
 				elif chunk.WhichOneof("command") == "play_animation":
 					audio_queue.put(IPCObject(data_type=IPCDataType.COMMAND,
-					                          data=CommandObject(command_type=CommandDataType.PlayAnimation,
+                                              data=CommandObject(command_type=CommandDataType.PlayAnimation,
 					                                             command_data=chunk.play_animation.animation,
 					                                             additional_data={
 						                                             "auto_idle": chunk.play_animation.auto_idle,
@@ -902,6 +1001,192 @@ class StreamingService(render_service_pb2_grpc.RenderServiceServicer):
 				"grpc_gap_max_ms": f"{grpc_gap_max_ms:.1f}",
 			})
 			logger.info(f"COMPLETE")
+
+	def render_direct(self, feed_fn, on_response, cancel_event):
+		"""Direct in-process render without gRPC transport.
+
+		Replaces RenderStream for in-process callers (e.g. HTTP adapter).
+		- feed_fn(audio_queue): callable that puts IPCObjects onto audio_queue, then puts None to signal end
+		- on_response(frame): called for each ImageObject/EventObject/ErrorObject from local_queue
+		- cancel_event: threading.Event; set it to cancel mid-stream
+
+		RenderStream (gRPC) is unchanged and continues to work normally.
+		"""
+		request_id = str(uuid4())
+		frame_idx = 0
+		with logger.contextualize(request_id=request_id):
+			audio_queue = mQueue()
+			video_queue = mQueue()
+			local_queue = tQueue()
+			is_online = Event()
+			is_alpha = Event()
+			output_format = SharedValue("")
+			sampling_timestamps = Value('d', 0)
+			audio_ms_total = Value('d', 0.0)
+			full_start_time = Value('d', 0.0)
+			full_start_time.value = time.perf_counter()
+			t_wall = TimingTracker(enabled=True, log_each=False)
+			t_wall.point_ms("req_start", 0.0)
+
+			render_process = Process(target=start_render_process,
+			                         args=(audio_queue, video_queue, full_start_time, sampling_timestamps, request_id))
+			render_process.start()
+
+			progress_tracker = ProgressTracker(
+				emit_interval=TARGET_FPS,
+				is_online=is_online.is_set(),
+				total_frames=0,
+			)
+
+			# Feed thread: caller-provided function puts IPCObjects onto audio_queue
+			feed_trd = Thread(target=feed_fn, args=(audio_queue, is_online, sampling_timestamps, audio_ms_total, progress_tracker))
+			feed_trd.start()
+
+			mqueue_trd = Thread(target=get_mqueue_thread,
+			                    args=(video_queue, local_queue, is_alpha, output_format, self.alpha_service, request_id,))
+			mqueue_trd.start()
+
+			avatar_sent_mem = None
+			avatar_id = None
+			tracked_width = None
+			tracked_height = None
+			frames_sent = 0
+			bytes_sent = 0
+			queue_wait_total_ms = 0.0
+			queue_wait_max_ms = 0.0
+			queue_get_count = 0
+			stream_started = False
+			first_send_ms = None
+			stream_end_ms = None
+			first_frame_time = None
+			every_frame_time = 1 / TARGET_FPS
+			realtime_metric = 0
+
+			try:
+				while True:
+					queue_get_start = time.perf_counter()
+					frame = local_queue.get()
+					if stream_started:
+						queue_wait_ms = (time.perf_counter() - queue_get_start) * 1000
+						queue_wait_total_ms += queue_wait_ms
+						if queue_wait_ms > queue_wait_max_ms:
+							queue_wait_max_ms = queue_wait_ms
+						queue_get_count += 1
+
+					if isinstance(frame, EventObject):
+						if frame.event_name == "wall_point":
+							point_name = frame.event_data.get("name")
+							elapsed_ms = frame.event_data.get("elapsed_ms")
+							if point_name and elapsed_ms is not None:
+								t_wall.point_once_ms(point_name, float(elapsed_ms))
+							continue
+						if frame.event_name == "avatar_set":
+							# Store and emit just before first video frame (mirrors RenderStream behavior)
+							avatar_sent_mem = frame
+							avatar_id = frame.event_data.get("avatar_id")
+							if frame.event_data.get("width") is not None and frame.event_data.get("height") is not None:
+								tracked_width = frame.event_data.get("width")
+								tracked_height = frame.event_data.get("height")
+							continue
+						elif frame.event_name == "image_set":
+							if frame.event_data.get("width") is not None and frame.event_data.get("height") is not None:
+								tracked_width = frame.event_data.get("width")
+								tracked_height = frame.event_data.get("height")
+						on_response(frame)
+						continue
+
+					elif isinstance(frame, ErrorObject):
+						on_response(frame)
+						logger.error(f"GOT ERROR OBJECT. ERROR TYPE: {str(frame.error_type)} ERROR MESSAGE: {frame.error_message}")
+						if frame.error_type in self.critical_exceptions:
+							logger.info("KILL CONTAINER")
+							os._exit(1)
+						elif frame.error_type in self.important_exceptions:
+							logger.info("STOP PROCESS")
+							break
+						continue
+
+					elif frame.data is None:
+						logger.trace("CHUNK LAST IS NONE - BREAK")
+						elapsed_ms = (time.perf_counter() - full_start_time.value) * 1000 if full_start_time.value else 0.0
+						t_wall.point_once_ms("stream_end", elapsed_ms)
+						stream_end_ms = elapsed_ms
+						break
+
+					# Cancellation check (replaces context.is_active())
+					if cancel_event.is_set():
+						logger.info("render_direct: cancel_event set, stopping stream")
+						break
+
+					if avatar_sent_mem:
+						on_response(avatar_sent_mem)
+						avatar_sent_mem = None
+
+					if frame.width is not None and frame.height is not None:
+						if tracked_width is None:
+							tracked_width = frame.width
+							tracked_height = frame.height
+					video_width = frame.width if frame.width is not None else tracked_width
+					video_height = frame.height if frame.height is not None else tracked_height
+
+					if frame_idx == 0:
+						elapsed_ms = (time.perf_counter() - full_start_time.value) * 1000 if full_start_time.value else 0.0
+						t_wall.point_once_ms("first_send", elapsed_ms)
+						first_send_ms = elapsed_ms
+						stream_started = True
+
+					frames_sent += 1
+					bytes_sent += len(frame.data)
+					on_response(ImageObject(
+						data=frame.data,
+						width=video_width,
+						height=video_height,
+						is_muted=getattr(frame, 'is_muted', False)
+					))
+
+					if first_frame_time is None:
+						first_frame_time = time.perf_counter()
+					realtime_metric = (time.perf_counter() - first_frame_time) - frame_idx * every_frame_time
+					frame_idx += 1
+
+					metadata = progress_tracker.track_frame_progress(realtime_metric=realtime_metric)
+					if metadata:
+						on_response(metadata)
+
+			except Exception as e:
+				logger.exception(f"GOT EXCEPTION IN render_direct {str(e)}")
+				raise
+			except BaseException as e:
+				logger.exception(f"GOT BASEEXCEPTION IN render_direct {str(e)}")
+				raise
+			finally:
+				video_queue.put(ImageObject(data=None, height=None, width=None))
+				logger.info("render_direct: joining process")
+				render_process.join(timeout=2.0)
+				if render_process.is_alive():
+					logger.warning("render_direct: process still alive, terminating")
+					render_process.terminate()
+					render_process.join(timeout=2.0)
+				feed_trd.join()
+				mqueue_trd.join(timeout=5.0)
+
+			elapsed_ms = (time.perf_counter() - full_start_time.value) * 1000 if full_start_time.value else 0.0
+			t_wall.point_once_ms("req_end", elapsed_ms)
+			t_wall.delta("avatar_prepare", "avatar_start", "avatar_ready")
+			t_wall.delta("ttff_server", "req_start", "first_send")
+			t_wall.delta("stream_duration", "first_send", "stream_end")
+			t_wall.delta("total", "req_start", "req_end")
+			stream_duration_s = 0.0
+			if first_send_ms is not None and stream_end_ms is not None and stream_end_ms > first_send_ms:
+				stream_duration_s = (stream_end_ms - first_send_ms) / 1000
+			avg_send_fps = (frames_sent / stream_duration_s) if stream_duration_s > 0 else 0.0
+			t_wall.log_summary(label="WALL_DIRECT", include_points=False, extra={
+				"avatar_id": avatar_id or "-",
+				"frames_sent": frames_sent,
+				"bytes_sent": bytes_sent,
+				"avg_send_fps": f"{avg_send_fps:.1f}",
+			})
+			logger.info("render_direct: complete")
 
 	def InfoRouter(self, request, context):
 		folder_path = "/app/assets/"

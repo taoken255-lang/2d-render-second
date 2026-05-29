@@ -1,26 +1,64 @@
+from proto import render_service_pb2_grpc
 from concurrent import futures
-import multiprocessing
-import os
-import threading
-
-import grpc
-import torch
+from config import Config
 from loguru import logger
+import multiprocessing
+import threading
+import torch
+import grpc
+import sys
+import os
 
 from config import Config
 from logging_config import configure_logging
 from proto import render_service_pb2_grpc
 from service.streaming import StreamingService
-
+from apps.adapters.render.agnet.app import app as http_app, init_runner
 
 configure_logging(Config.LOG_LEVEL, Config.LOG_FORMAT)
 
+if Config.LOG_LEVEL == "INFO":
+	logger.add(
+		sys.stdout,
+		format="{time} | {level} | {extra[request_id]} | {message}",
+		level="INFO"
+	)
+elif Config.LOG_LEVEL == "DEBUG":
+	logger.add(
+		sys.stdout,
+		format="{time} | {level} | {extra[request_id]} | {message}",
+		level="DEBUG"
+	)
+elif Config.LOG_LEVEL == "TRACE":
+	logger.add(
+		sys.stdout,
+		format="{time} | {level} | {extra[request_id]} | {message}",
+		level="TRACE"
+	)
+elif Config.LOG_LEVEL == "WARNING":
+	logger.add(
+		sys.stdout,
+		format="{time} | {level} | {extra[request_id]} | {message}",
+		level="WARNING"
+	)
+elif Config.LOG_LEVEL == "ERROR":
+	logger.add(
+		sys.stdout,
+		format="{time} | {level} | {extra[request_id]} | {name}:{function}:{line} - {message}",
+		level="ERROR",
+		backtrace=True,
+		diagnose=True
+	)
 
-def grpc_service() -> None:
-	# Avoid importing heavy alpha stack in spawned render worker processes.
-	from service.offline_alpha import OfflineAlphaService
+def http_service(streaming_service) -> None:
+	import uvicorn
+	init_runner(streaming_service)
+	adapter_host = Config.ENGINE_ADAPTER_HOST or "0.0.0.0"
+	adapter_port = int(Config.ENGINE_ADAPTER_PORT or 8003)
+	logger.info(f"HTTP adapter starting on {adapter_host}:{adapter_port}...")
+	uvicorn.run(http_app, host=adapter_host, port=adapter_port, log_config=None)
 
-	alpha_service = OfflineAlphaService()
+def grpc_service(streaming_service) -> None:
 	server = grpc.server(
 		futures.ThreadPoolExecutor(max_workers=10),
 		options=[
@@ -35,7 +73,7 @@ def grpc_service() -> None:
 		],
 	)
 	render_service_pb2_grpc.add_RenderServiceServicer_to_server(
-		StreamingService(alpha_service=alpha_service),
+		streaming_service,
 		server,
 	)
 	server.add_insecure_port(f'[::]:{Config.RENDER_SERVICE_PORT}')
@@ -45,10 +83,21 @@ def grpc_service() -> None:
 
 
 def serve() -> None:
-	grpc_thread = threading.Thread(target=grpc_service)
+	# Avoid importing heavy alpha stack in spawned render worker processes.
+	from service.offline_alpha import OfflineAlphaService
+
+	# Create once, shared between gRPC and HTTP adapter
+	alpha_service = OfflineAlphaService()
+	streaming_service = StreamingService(alpha_service=alpha_service)
+
+	grpc_thread = threading.Thread(target=grpc_service, args=(streaming_service,), daemon=True)
+	http_thread = threading.Thread(target=http_service, args=(streaming_service,), daemon=True)
 
 	grpc_thread.start()
+	http_thread.start()
+
 	grpc_thread.join()
+	http_thread.join()
 
 
 if __name__ == '__main__':
