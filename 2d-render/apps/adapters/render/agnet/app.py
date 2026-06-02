@@ -34,7 +34,7 @@ from apps.adapters.render.agnet.metrics import AgnetBridgeMetrics
 from apps.common.adapter.stage import Stage
 
 
-setup_logging()
+setup_logging(service_name="adapter_agnet")
 logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
