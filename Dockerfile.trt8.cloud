@@ -49,6 +49,16 @@ ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 
 # Disable uv cache to avoid /.cache directory creation
 ENV UV_NO_CACHE=1
+ENV USER=appuser
+ENV LOGNAME=appuser
+ENV HOME=/home/appuser
+ENV XDG_CACHE_HOME=/tmp/.cache
+ENV TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor
+
+RUN groupadd -g 10001 appuser && \
+    useradd -m -u 10001 -g 10001 -s /usr/sbin/nologin appuser && \
+    mkdir -p /tmp/.cache /tmp/torchinductor /tmp/huggingface /tmp/numba_cache && \
+    chown -R 10001:10001 /home/appuser /tmp/.cache /tmp/torchinductor /tmp/huggingface /tmp/numba_cache
 
 # --------------------------------------------------------------------------------------------
 RUN ln -sf /usr/share/zoneinfo/Europe/Moscow /etc/localtime
