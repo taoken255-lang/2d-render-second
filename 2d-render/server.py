@@ -1,12 +1,9 @@
-from proto import render_service_pb2_grpc
 from concurrent import futures
-from config import Config
 from loguru import logger
 import multiprocessing
 import threading
 import torch
 import grpc
-import sys
 import os
 
 from config import Config
@@ -16,39 +13,6 @@ from service.streaming import StreamingService
 from apps.adapters.render.agnet.app import app as http_app, init_runner
 
 configure_logging(Config.LOG_LEVEL, Config.LOG_FORMAT)
-
-if Config.LOG_LEVEL == "INFO":
-	logger.add(
-		sys.stdout,
-		format="{time} | {level} | {extra[request_id]} | {message}",
-		level="INFO"
-	)
-elif Config.LOG_LEVEL == "DEBUG":
-	logger.add(
-		sys.stdout,
-		format="{time} | {level} | {extra[request_id]} | {message}",
-		level="DEBUG"
-	)
-elif Config.LOG_LEVEL == "TRACE":
-	logger.add(
-		sys.stdout,
-		format="{time} | {level} | {extra[request_id]} | {message}",
-		level="TRACE"
-	)
-elif Config.LOG_LEVEL == "WARNING":
-	logger.add(
-		sys.stdout,
-		format="{time} | {level} | {extra[request_id]} | {message}",
-		level="WARNING"
-	)
-elif Config.LOG_LEVEL == "ERROR":
-	logger.add(
-		sys.stdout,
-		format="{time} | {level} | {extra[request_id]} | {name}:{function}:{line} - {message}",
-		level="ERROR",
-		backtrace=True,
-		diagnose=True
-	)
 
 def http_service(streaming_service) -> None:
 	import uvicorn
