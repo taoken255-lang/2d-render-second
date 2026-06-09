@@ -99,7 +99,7 @@ logger = get_logger(__name__)
 class State:
     def __init__(self):
         self.streamer_task: asyncio.Task = None
-        self.streamer_loop = asyncio.AbstractEventLoop = None
+        self.streamer_loop: asyncio.AbstractEventLoop = None
         self.avatar: str = None
         self.current_session_id = None
         self.auto_idle: bool = True

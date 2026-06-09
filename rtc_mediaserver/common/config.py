@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     offline_warmup: bool = False
 
     turn_enabled: bool = False
-    turn_server: str = "87.242.91.109:19303"
+    turn_server: str = "46.243.205.191:19303"
     turn_login: str = "iiTh7jijiemu"
     turn_password: str = "aoGheibiaz5u"
 

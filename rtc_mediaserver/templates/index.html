@@ -442,82 +442,175 @@ function connectWS() {
     };
 }
 
+async function waitForIceGatheringComplete(pc) {
+    if (pc.iceGatheringState === 'complete') {
+        return;
+    }
+
+    await new Promise(resolve => {
+        function checkState() {
+            console.log('ICE gathering state:', pc.iceGatheringState);
+
+            if (pc.iceGatheringState === 'complete') {
+                pc.removeEventListener(
+                    'icegatheringstatechange',
+                    checkState
+                );
+                resolve();
+            }
+        }
+
+        pc.addEventListener(
+            'icegatheringstatechange',
+            checkState
+        );
+
+        setTimeout(() => {
+            pc.removeEventListener(
+                'icegatheringstatechange',
+                checkState
+            );
+            console.warn('ICE gathering timeout');
+            resolve();
+        }, 10000);
+    });
+}
+
 async function connectWebRTC() {
     try {
         status('Connecting WebRTC');
-        setBtns({rtc: true});
+        setBtns({ rtc: true });
         stopFpsTracking();
+
         if (pc) {
             try {
                 pc.close();
             } catch (e) {
-                console.warn('Failed to close previous RTCPeerConnection', e);
+                console.warn(
+                    'Failed to close previous RTCPeerConnection',
+                    e
+                );
             }
         }
+
         const useTurn = S('use_turn').checked;
-        const rtcConfig = useTurn ? {
-            iceServers: [
-                {
-                    urls: [
-                        'turn:87.242.91.109:19303?transport=udp',
-                        'turn:87.242.91.109:19303?transport=tcp'
-                    ],
-                    username: 'iiTh7jijiemu',
-                    credential: 'aoGheibiaz5u'
-                }
-            ],
-            iceTransportPolicy: 'relay'
-        } : undefined;
+
+        const rtcConfig = useTurn
+            ? {
+                  iceServers: [
+                      {
+                          urls: [
+                              'turn:46.243.205.191:19303?transport=udp'
+                          ],
+                          username: 'iiTh7jijiemu',
+                          credential: 'aoGheibiaz5u'
+                      }
+                  ],
+                  iceTransportPolicy: 'relay'
+              }
+            : undefined;
+
         pc = new RTCPeerConnection(rtcConfig);
-        // pc = new RTCPeerConnection({
-        //   iceServers: [
-        //     {
-        //       urls: [
-        //         'turn:87.242.91.109:19303?transport=udp',
-        //       ],
-        //       username: 'iiTh7jijiemu',
-        //       credential: 'aoGheibiaz5u',
-        //     }
-        //   ],
-        //   // Рекомендуется, если ты хочешь гарантированно только через TURN:
-        //   iceTransportPolicy: 'relay',
-        // });
-        pc.addTransceiver('audio', {direction: 'recvonly'});
-        pc.addTransceiver('video', {direction: 'recvonly'});
+
+        pc.onicecandidate = event => {
+            console.log('ICE candidate:', event.candidate);
+        };
+
+        pc.onicegatheringstatechange = () => {
+            console.log(
+                'ICE gathering:',
+                pc.iceGatheringState
+            );
+        };
+        pc.oniceconnectionstatechange = () => {
+            console.log(
+                'ICE connection:',
+                pc.iceConnectionState
+            );
+        };
+        pc.onconnectionstatechange = () => {
+            console.log(
+                'Connection state:',
+                pc.connectionState
+            );
+
+            if (
+                ['failed', 'disconnected', 'closed']
+                    .includes(pc.connectionState)
+            ) {
+                stopFpsTracking();
+            }
+        };
+        pc.addTransceiver('audio', {
+            direction: 'recvonly'
+        });
+        pc.addTransceiver('video', {
+            direction: 'recvonly'
+        });
         pc.ontrack = e => {
+            console.log('Track received:', e.track.kind);
+
             if (e.track.kind === 'video') {
                 S('vid').srcObject = e.streams[0];
                 startFpsTracking();
             }
         };
-        pc.onconnectionstatechange = () => {
-            if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-                stopFpsTracking();
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        console.log(
+            'Waiting for ICE gathering...'
+        );
+        await waitForIceGatheringComplete(pc);
+        console.log(
+            'Final offer SDP:\n',
+            pc.localDescription.sdp
+        );
+        const bitrate =
+            parseInt(S('bitrate').value, 10) ||
+            1000000;
+        const offerUrl = new URL(
+            '/offer',
+            window.location.origin
+        );
+        offerUrl.searchParams.set(
+            'bitrate',
+            String(bitrate)
+        );
+        offerUrl.searchParams.set(
+            'turn',
+            String(useTurn)
+        );
+        const res = await fetch(
+            offerUrl.toString(),
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(
+                    pc.localDescription
+                )
             }
-        };
-        await pc.setLocalDescription(await pc.createOffer());
-        const bitrate = parseInt(S('bitrate').value, 10) || 1000000;
-        const offerUrl = new URL('/offer', window.location.origin);
-        offerUrl.searchParams.set('bitrate', String(bitrate));
-        offerUrl.searchParams.set('turn', String(useTurn));
-        const res = await fetch(offerUrl.toString(), {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(pc.localDescription)
-        });
+        );
         const answer = await res.json();
         if (!res.ok) {
-            throw new Error(answer.message || `HTTP ${res.status}`);
+            throw new Error(
+                answer.message ||
+                `HTTP ${res.status}`
+            );
         }
+        console.log(
+            'Received answer SDP:\n',
+            answer.sdp
+        );
         await pc.setRemoteDescription(answer);
         status('WebRTC connected');
-        // Disable RTC button to prevent reconnect attempts but keep others intact
-        setBtns({rtc: true});
+        setBtns({ rtc: true });
     } catch (e) {
         console.error(e);
         status('WebRTC error', true);
         stopFpsTracking();
-        setBtns({rtc: false});
+        setBtns({ rtc: false });
     }
 }
 
